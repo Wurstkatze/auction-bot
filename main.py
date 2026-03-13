@@ -41,10 +41,10 @@ class ItemPaginationView(View):
     def update_buttons(self):
         self.clear_items()
         if self.current > 0:
-            self.add_item(Button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id=f"prev_{self.current}"))
+            self.add_item(Button(label="◀️ Previous", style=discord.ButtonStyle.blurple))
         if self.current < len(self.items) - 1:
-            self.add_item(Button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id=f"next_{self.current}"))
-        self.add_item(Button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close"))
+            self.add_item(Button(label="Next ▶️", style=discord.ButtonStyle.blurple))
+        self.add_item(Button(label="❌ Close", style=discord.ButtonStyle.red))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -56,13 +56,6 @@ class ItemPaginationView(View):
         try:
             if self.message:
                 await self.message.edit(view=None)
-        except:
-            pass
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
-        print(f"Pagination error: {error}")
-        try:
-            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
         except:
             pass
 
@@ -79,32 +72,28 @@ class ItemPaginationView(View):
             embed.set_footer(text=f"Item {self.current+1} of {len(self.items)}")
             await interaction.response.edit_message(embed=embed, view=self)
         except Exception as e:
-            print(f"Error in show_current: {e}")
-            await interaction.followup.send("Error displaying item.", ephemeral=True)
+            # If editing fails, at least send an ephemeral error
+            await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple)
     async def prev_button(self, interaction: discord.Interaction, button: Button):
-        print(f"Previous button pressed, current={self.current}")
+        # Confirm the click
+        await interaction.response.send_message("Loading previous...", ephemeral=True)
         self.current -= 1
         self.update_buttons()
         await self.show_current(interaction)
 
     @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple)
     async def next_button(self, interaction: discord.Interaction, button: Button):
-        print(f"Next button pressed, current={self.current}")
+        await interaction.response.send_message("Loading next...", ephemeral=True)
         self.current += 1
         self.update_buttons()
         await self.show_current(interaction)
 
     @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red)
     async def close_button(self, interaction: discord.Interaction, button: Button):
-        print("Close button pressed")
-        try:
-            await interaction.response.edit_message(content="Closed.", embed=None, view=None)
-            self.stop()
-        except Exception as e:
-            print(f"Error closing: {e}")
-            await interaction.followup.send("Error closing.", ephemeral=True)
+        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        self.stop()
 
 
 # ----- Helper Functions -----
