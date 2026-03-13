@@ -6,6 +6,8 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import database
+from discord.ui import View, Button
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -27,6 +29,64 @@ class AuctionBot(commands.Bot):
 
 bot = AuctionBot()
 
+class ItemPaginationView(View):
+    def __init__(self, items, user_id):
+        super().__init__(timeout=60)
+        self.items = items
+        self.user_id = user_id
+        self.current = 0
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.clear_items()
+        if self.current > 0:
+            self.add_item(Button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev"))
+        if self.current < len(self.items) - 1:
+            self.add_item(Button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next"))
+        self.add_item(Button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You cannot control this menu.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        self.clear_items()
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
+
+    async def show_current(self, interaction: discord.Interaction):
+        item_id, name, url = self.items[self.current]
+        embed = discord.Embed(
+            title=f"Item #{item_id}",
+            description=name,
+            color=discord.Color.blue()
+        )
+        if url:
+            embed.set_image(url=url)
+        embed.set_footer(text=f"Item {self.current+1} of {len(self.items)}")
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.message = await interaction.original_response()
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: Button):
+        self.current -= 1
+        self.update_buttons()
+        await self.show_current(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        self.current += 1
+        self.update_buttons()
+        await self.show_current(interaction)
+
+    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close")
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        self.stop()
 # ----- Helper Functions -----
 def parse_duration(duration_str):
     pattern = re.compile(r'((?P<hours>\d+)h)?((?P<minutes>\d+)m)?')
@@ -452,10 +512,143 @@ async def finalize_auction(channel_id, forced=False):
     except Exception as e:
         print(f"[FINALIZE] Failed to DM seller: {e}")
 
+@bot.tree.command(name="additem", description="Add an item to the mystery crate pool")
+@app_commands.describe(
+    name="Item name",
+    image="Upload an image (optional)",
+    image_url="Or provide an image URL (optional)"
+)
+async def additem(
+    interaction: discord.Interaction,
+    name: str,
+    image: discord.Attachment = None,
+    image_url: str = None
+):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to add items.", ephemeral=True)
+        return
+
+    if image and image_url:
+        await interaction.response.send_message("Please provide either an uploaded image or a URL, not both.", ephemeral=True)
+        return
+
+    if not image and not image_url:
+        await interaction.response.send_message("You must provide either an image upload or an image URL.", ephemeral=True)
+        return
+
+    final_url = image.url if image else image_url
+    item_id = database.add_item(name, final_url)
+    await interaction.response.send_message(f"✅ Item added with ID #{item_id}: {name}")
+
+@bot.tree.command(name="removeitem", description="Remove an item from the pool by ID")
+@app_commands.describe(item_id="The ID of the item to remove")
+async def removeitem(interaction: discord.Interaction, item_id: int):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to remove items.", ephemeral=True)
+        return
+    if database.remove_item(item_id):
+        await interaction.response.send_message(f"✅ Item #{item_id} removed.")
+    else:
+        await interaction.response.send_message(f"❌ Item #{item_id} not found.", ephemeral=True)
+
+@bot.tree.command(name="addpoints", description="Add points to a user")
+@app_commands.describe(user="The user to reward", amount="Number of points")
+async def addpoints(interaction: discord.Interaction, user: discord.Member, amount: int):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to add points.", ephemeral=True)
+        return
+    database.add_points(user.id, amount)
+    await interaction.response.send_message(f"✅ Added {amount} points to {user.mention}.")
+
+@bot.tree.command(name="removepoints", description="Remove points from a user")
+@app_commands.describe(user="The user", amount="Number of points")
+async def removepoints(interaction: discord.Interaction, user: discord.Member, amount: int):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to remove points.", ephemeral=True)
+        return
+    if database.remove_points(user.id, amount):
+        await interaction.response.send_message(f"✅ Removed {amount} points from {user.mention}.")
+    else:
+        await interaction.response.send_message(f"❌ {user.mention} doesn't have enough points.", ephemeral=True)
+
+@bot.tree.command(name="setdrawcost", description="Set the points required per draw")
+@app_commands.describe(amount="Points per draw")
+async def setdrawcost(interaction: discord.Interaction, amount: int):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to set draw cost.", ephemeral=True)
+        return
+    database.set_setting("draw_cost", str(amount))
+    await interaction.response.send_message(f"✅ Draw cost set to {amount} points.")
+
+@bot.tree.command(name="items", description="Browse all items in the mystery crate pool")
+async def items(interaction: discord.Interaction):
+    items = database.get_all_items()
+    if not items:
+        await interaction.response.send_message("The pool is empty.")
+        return
+    view = ItemPaginationView(items, interaction.user.id)
+    # Show first item
+    item_id, name, url = items[0]
+    embed = discord.Embed(
+        title=f"Item #{item_id}",
+        description=name,
+        color=discord.Color.blue()
+    )
+    if url:
+        embed.set_image(url=url)
+    embed.set_footer(text=f"Item 1 of {len(items)}")
+    await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
+
+@bot.tree.command(name="points", description="Check your current points")
+async def points(interaction: discord.Interaction):
+    pts = database.get_points(interaction.user.id)
+    await interaction.response.send_message(f"You have **{pts}** points.", ephemeral=True)    
+
+@bot.tree.command(name="draw", description="Draw a random item from the pool (costs points)")
+async def draw(interaction: discord.Interaction):
+    # Channel restriction
+    if interaction.channel.name != "mystery-crates":
+        await interaction.response.send_message("You can only use `/draw` in #mystery-crates.", ephemeral=True)
+        return
+
+    # Get draw cost
+    cost = int(database.get_setting("draw_cost", "10"))  # default 10
+    user_id = interaction.user.id
+    pts = database.get_points(user_id)
+
+    if pts < cost:
+        await interaction.response.send_message(f"You need {cost} points to draw. You have {pts}.", ephemeral=True)
+        return
+
+    # Atomic draw: get and remove a random item
+    item = database.draw_random_item()
+    if not item:
+        await interaction.response.send_message("The pool is empty. Ask an admin to add items!", ephemeral=True)
+        return
+
+    # Deduct points and record draw
+    database.remove_points(user_id, cost)
+    database.record_draw(user_id, item[0])
+
+    # Send result
+    embed = discord.Embed(title="🎉 You drew...", description=item[1], color=discord.Color.green())
+    if item[2]:
+        embed.set_image(url=item[2])
+    await interaction.response.send_message(embed=embed)
+
 # ----- Run Bot -----
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
+    database.init_db()
+    print("Database initialized.")
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)
