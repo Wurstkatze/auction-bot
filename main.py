@@ -60,40 +60,39 @@ class ItemPaginationView(View):
             pass
 
     async def show_current(self, interaction: discord.Interaction):
-        try:
-            item_id, name, url = self.items[self.current]
-            embed = discord.Embed(
-                title=f"Item #{item_id}",
-                description=name,
-                color=discord.Color.blue()
-            )
-            if url:
-                embed.set_image(url=url)
-            embed.set_footer(text=f"Item {self.current+1} of {len(self.items)}")
-            await interaction.response.edit_message(embed=embed, view=self)
-        except Exception as e:
-            # If editing fails, at least send an ephemeral error
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+    try:
+        item_id, name, url = self.items[self.current]
+        embed = discord.Embed(
+            title=f"Item #{item_id}",
+            description=name,
+            color=discord.Color.blue()
+        )
+        if url:
+            embed.set_image(url=url)
+        embed.set_footer(text=f"Item {self.current+1} of {len(self.items)}")
+        await interaction.edit_original_response(embed=embed, view=self)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple)
-    async def prev_button(self, interaction: discord.Interaction, button: Button):
-        # Confirm the click
-        await interaction.response.send_message("Loading previous...", ephemeral=True)
-        self.current -= 1
-        self.update_buttons()
-        await self.show_current(interaction)
+@discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple)
+async def prev_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()  # Acknowledge the click
+    self.current -= 1
+    self.update_buttons()
+    await self.show_current(interaction)
 
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple)
-    async def next_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("Loading next...", ephemeral=True)
-        self.current += 1
-        self.update_buttons()
-        await self.show_current(interaction)
+@discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple)
+async def next_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()
+    self.current += 1
+    self.update_buttons()
+    await self.show_current(interaction)
 
-    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red)
-    async def close_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
-        self.stop()
+@discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red)
+async def close_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()
+    await interaction.edit_original_response(content="Closed.", embed=None, view=None)
+    self.stop()
 
 
 # ----- Helper Functions -----
@@ -676,34 +675,37 @@ class AdminItemListView(View):
         return True
 
     async def show_page(self, interaction: discord.Interaction):
-        start = self.current_page * self.items_per_page
-        end = start + self.items_per_page
-        page_items = self.items[start:end]
-        description = "\n".join([f"`#{item[0]}` – {item[1]}" for item in page_items])
-        embed = discord.Embed(
-            title="All Items (Admin View)",
-            description=description or "No items on this page.",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages} • Total items: {len(self.items)}")
-        await interaction.response.edit_message(embed=embed, view=self)
+    start = self.current_page * self.items_per_page
+    end = start + self.items_per_page
+    page_items = self.items[start:end]
+    description = "\n".join([f"`#{item[0]}` – {item[1]}" for item in page_items])
+    embed = discord.Embed(
+        title="All Items (Admin View)",
+        description=description or "No items on this page.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages} • Total items: {len(self.items)}")
+    await interaction.edit_original_response(embed=embed, view=self)
 
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
-    async def prev_button(self, interaction: discord.Interaction, button: Button):
-        self.current_page -= 1
-        self.update_buttons()
-        await self.show_page(interaction)
+@discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
+async def prev_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()
+    self.current_page -= 1
+    self.update_buttons()
+    await self.show_page(interaction)
 
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next")
-    async def next_button(self, interaction: discord.Interaction, button: Button):
-        self.current_page += 1
-        self.update_buttons()
-        await self.show_page(interaction)
+@discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next")
+async def next_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()
+    self.current_page += 1
+    self.update_buttons()
+    await self.show_page(interaction)
 
-    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close")
-    async def close_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
-        self.stop()
+@discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close")
+async def close_button(self, interaction: discord.Interaction, button: Button):
+    await interaction.response.defer()
+    await interaction.edit_original_response(content="Closed.", embed=None, view=None)
+    self.stop()
 
 @bot.tree.command(name="adminitems", description="[Admin] List all items with IDs (paginated)")
 async def adminitems(interaction: discord.Interaction):
