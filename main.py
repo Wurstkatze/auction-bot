@@ -31,10 +31,11 @@ bot = AuctionBot()
 
 class ItemPaginationView(View):
     def __init__(self, items, user_id):
-        super().__init__(timeout=60)
+        super().__init__(timeout=120)  # Increased timeout
         self.items = items
         self.user_id = user_id
         self.current = 0
+        self.message = None
         self.update_buttons()
 
     def update_buttons(self):
@@ -52,9 +53,8 @@ class ItemPaginationView(View):
         return True
 
     async def on_timeout(self):
-        self.clear_items()
         try:
-            await self.message.edit(view=self)
+            await self.message.edit(view=None)
         except:
             pass
 
@@ -69,7 +69,23 @@ class ItemPaginationView(View):
             embed.set_image(url=url)
         embed.set_footer(text=f"Item {self.current+1} of {len(self.items)}")
         await interaction.response.edit_message(embed=embed, view=self)
-        self.message = await interaction.original_response()
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: Button):
+        self.current -= 1
+        self.update_buttons()
+        await self.show_current(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        self.current += 1
+        self.update_buttons()
+        await self.show_current(interaction)
+
+    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close")
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        self.stop()
 
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
     async def prev_button(self, interaction: discord.Interaction, button: Button):
@@ -637,10 +653,88 @@ async def draw(interaction: discord.Interaction):
     database.record_draw(user_id, item[0])
 
     # Send result
-    embed = discord.Embed(title="🎉 You drew...", description=item[1], color=discord.Color.green())
+    embed = discord.Embed(title="🎁 Mystery Box", description=f"You open the mystery box and get... **{item[1]}**!", color=discord.Color.green())
     if item[2]:
         embed.set_image(url=item[2])
     await interaction.response.send_message(embed=embed)
+
+class AdminItemListView(View):
+    def __init__(self, items, user_id):
+        super().__init__(timeout=120)
+        self.items = items  # list of (id, name, url)
+        self.user_id = user_id
+        self.current_page = 0
+        self.items_per_page = 20
+        self.total_pages = (len(items) + self.items_per_page - 1) // self.items_per_page
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.clear_items()
+        if self.current_page > 0:
+            self.add_item(Button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev"))
+        if self.current_page < self.total_pages - 1:
+            self.add_item(Button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next"))
+        self.add_item(Button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You cannot control this menu.", ephemeral=True)
+            return False
+        return True
+
+    async def show_page(self, interaction: discord.Interaction):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        page_items = self.items[start:end]
+        description = "\n".join([f"`#{item[0]}` – {item[1]}" for item in page_items])
+        embed = discord.Embed(
+            title="All Items (Admin View)",
+            description=description or "No items on this page.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Page {self.current_page+1} of {self.total_pages} • Total items: {len(self.items)}")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: Button):
+        self.current_page -= 1
+        self.update_buttons()
+        await self.show_page(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        self.current_page += 1
+        self.update_buttons()
+        await self.show_page(interaction)
+
+    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red, custom_id="close")
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.edit_message(content="Closed.", embed=None, view=None)
+        self.stop()
+
+@bot.tree.command(name="adminitems", description="[Admin] List all items with IDs (paginated)")
+async def adminitems(interaction: discord.Interaction):
+    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
+    if role not in interaction.user.roles:
+        await interaction.response.send_message("You need the **Cryysys** role to use this command.", ephemeral=True)
+        return
+    items = database.get_all_items()
+    if not items:
+        await interaction.response.send_message("No items in the pool.")
+        return
+    view = AdminItemListView(items, interaction.user.id)
+    start = 0
+    end = min(20, len(items))
+    page_items = items[start:end]
+    description = "\n".join([f"`#{item[0]}` – {item[1]}" for item in page_items])
+    embed = discord.Embed(
+        title="All Items (Admin View)",
+        description=description,
+        color=discord.Color.gold()
+    )
+    total_pages = (len(items) + 19) // 20
+    embed.set_footer(text=f"Page 1 of {total_pages} • Total items: {len(items)}")
+    await interaction.response.send_message(embed=embed, view=view)
 
 # ----- Run Bot -----
 @bot.event
