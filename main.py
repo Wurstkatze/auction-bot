@@ -754,22 +754,38 @@ async def draw(interaction: discord.Interaction):
 
 # ==========ITEM DB ============
 
-@bot.tree.command(name="importitems", description="[Admin] Import game items from SQL file")
-@app_commands.describe(file="The SQL dump file")
-async def importitems(interaction: discord.Interaction, file: discord.Attachment):
+@bot.tree.command(name="importitems", description="[Admin] Import game items from SQL file (provide a URL)")
+@app_commands.describe(url="Direct download URL of the SQL file")
+async def importitems(interaction: discord.Interaction, url: str):
     role = discord.utils.get(interaction.guild.roles, name="Cryysys")
     if role not in interaction.user.roles:
         await interaction.response.send_message("You need the **Cryysys** role to import items.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    content = await file.read()
+
+    # Download the file
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send(f"Failed to download file (HTTP {resp.status}).", ephemeral=True)
+                    return
+                # Read content (37 MB is fine)
+                content = await resp.read()
+        except Exception as e:
+            await interaction.followup.send(f"Download error: {e}", ephemeral=True)
+            return
+
+    # Try to decode as UTF-8 (assume SQL file is text)
     try:
         sql_text = content.decode('utf-8')
     except UnicodeDecodeError:
-        await interaction.followup.send("File must be a text SQL file.", ephemeral=True)
+        await interaction.followup.send("File must be a text SQL file (UTF-8).", ephemeral=True)
         return
 
+    # Import into database
     try:
         count = items_db.import_raw_items(sql_text)
         await interaction.followup.send(f"✅ Imported {count} items into database.", ephemeral=True)
