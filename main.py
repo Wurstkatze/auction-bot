@@ -8,7 +8,6 @@ import re
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import database
-import items_db
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -23,7 +22,7 @@ class AuctionBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
         self.auctions = {}
         self.notification_prefs = {}
-        self.active_views = []  # Keep views from being garbage collected
+        self.active_views = []
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -82,6 +81,14 @@ def plain_time(dt):
 def format_timestamp(dt, style="R"):
     return f"<t:{int(dt.timestamp())}:{style}>"
 
+async def edit_start_message(auction, embed):
+    """Fetch the current start message and edit it. Avoids webhook token issues."""
+    try:
+        msg = await auction.channel.fetch_message(auction.start_message.id)
+        await msg.edit(embed=embed)
+    except (discord.NotFound, discord.Forbidden) as e:
+        print(f"Failed to edit start message: {e}")
+
 # ========== AUCTION DATA CLASS ==========
 
 class Auction:
@@ -108,14 +115,14 @@ async def auction_loop(channel_id):
     await bot.wait_until_ready()
     auction = bot.auctions.get(channel_id)
     if not auction:
-        print(f"[LOOP] No auction found for {channel_id} at start")
+        print(f"[LOOP] No auction found for {channel_id}")
         return
 
     print(f"[LOOP] Started for {channel_id} – ends at {auction.end_time} UTC")
 
     while True:
         if channel_id not in bot.auctions:
-            print(f"[LOOP] Auction {channel_id} removed from bot.auctions, exiting")
+            print(f"[LOOP] Auction {channel_id} removed")
             break
 
         now = datetime.now(timezone.utc)
@@ -132,6 +139,7 @@ async def auction_loop(channel_id):
             await finalize_auction(channel_id)
             break
 
+        # 1-hour reminder
         if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
             try:
                 await auction.seller.send(f"Your auction for **{auction.item_name}** ends in 1 hour!")
@@ -139,6 +147,7 @@ async def auction_loop(channel_id):
             except:
                 pass
 
+        # 5-minute reminder
         if not auction.reminder_5m_sent and time_left <= 300 and time_left > 240:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
@@ -151,26 +160,24 @@ async def auction_loop(channel_id):
                     await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
 
+        # Update original message every minute
         if int(time_left) % 60 == 0:
             try:
-                try:
-                    
-    embed = discord.Embed(
-        title="Auction Started!",
-        description=(
-            f"**Item:** {auction.item_name}\n"
-            f"**Seller:** {auction.seller.mention}\n"
-            f"**Starting Price:** {format_price(auction.start_price, auction.currency_symbol)}\n"
-            f"**Min Increment:** {format_price(auction.min_increment, auction.currency_symbol)}\n"
-            f"**Ends:** {format_timestamp(auction.end_time, 'R')}\n"
-            f"*(Updates every minute)*"
-        ),
-        color=discord.Color.green()
-    )
-    # await auction.start_message.edit(embed=embed)   # <-- REMOVE
-    await edit_start_message(auction, embed)          # <-- ADD
-except:
-    pass
+                embed = discord.Embed(
+                    title="Auction Started!",
+                    description=(
+                        f"**Item:** {auction.item_name}\n"
+                        f"**Seller:** {auction.seller.mention}\n"
+                        f"**Starting Price:** {format_price(auction.start_price, auction.currency_symbol)}\n"
+                        f"**Min Increment:** {format_price(auction.min_increment, auction.currency_symbol)}\n"
+                        f"**Ends:** {format_timestamp(auction.end_time, 'R')}\n"
+                        f"*(Updates every minute)*"
+                    ),
+                    color=discord.Color.green()
+                )
+                await edit_start_message(auction, embed)
+            except Exception as e:
+                print(f"Failed to update embed: {e}")
 
         if time_left < 10:
             await asyncio.sleep(1)
@@ -288,23 +295,19 @@ async def bid(interaction: discord.Interaction, amount: str):
             auction.end_time += timedelta(minutes=1)
             extended = True
 
-        # Edit original auction message
-embed = discord.Embed(
-    title="Auction Started!",
-    description=(
-        f"**Item:** {auction.item_name}\n"
-        f"**Seller:** {auction.seller.mention}\n"
-        f"**Starting Price:** {format_price(auction.start_price, auction.currency_symbol)}\n"
-        f"**Min Increment:** {format_price(auction.min_increment, auction.currency_symbol)}\n"
-        f"**Ends:** {format_timestamp(auction.end_time, 'R')}\n"
-        f"*(Updates every minute)*"
-    ),
-    color=discord.Color.green()
-)
-# await auction.start_message.edit(embed=embed)   # <-- REMOVE
-await edit_start_message(auction, embed)          # <-- ADD
-except:
-    pass
+        embed = discord.Embed(
+            title="Auction Started!",
+            description=(
+                f"**Item:** {auction.item_name}\n"
+                f"**Seller:** {auction.seller.mention}\n"
+                f"**Starting Price:** {format_price(auction.start_price, auction.currency_symbol)}\n"
+                f"**Min Increment:** {format_price(auction.min_increment, auction.currency_symbol)}\n"
+                f"**Ends:** {format_timestamp(auction.end_time, 'R')}\n"
+                f"*(Updates every minute)*"
+            ),
+            color=discord.Color.green()
+        )
+        await edit_start_message(auction, embed)
 
         extend_msg = "⏰ **Anti‑sniping activated!** Auction extended by 1 minute." if extended else ""
         embed_bid = discord.Embed(
@@ -516,80 +519,6 @@ class ItemDropdownView(View):
         if self in bot.active_views:
             bot.active_views.remove(self)
 
-# ========== ADMIN ITEM LIST VIEW (PAGINATED WITH BUTTONS) ==========
-
-class AdminItemListView(View):
-    def __init__(self, items, user_id):
-        super().__init__(timeout=120)
-        self.items = items
-        self.user_id = user_id
-        self.page = 0
-        self.items_per_page = 20
-        self.total_pages = (len(items) + self.items_per_page - 1) // self.items_per_page
-        self.message = None
-        self.update_buttons()
-        bot.active_views.append(self)
-
-    def update_buttons(self):
-        self.clear_items()
-        if self.page > 0:
-            self.add_item(Button(label="◀️ Previous", style=discord.ButtonStyle.blurple))
-        if self.page < self.total_pages - 1:
-            self.add_item(Button(label="Next ▶️", style=discord.ButtonStyle.blurple))
-        self.add_item(Button(label="❌ Close", style=discord.ButtonStyle.red))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Not your menu.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.blurple)
-    async def prev_page(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        self.page -= 1
-        self.update_buttons()
-        await self.show_page(interaction)
-
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.blurple)
-    async def next_page(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        self.page += 1
-        self.update_buttons()
-        await self.show_page(interaction)
-
-    @discord.ui.button(label="❌ Close", style=discord.ButtonStyle.red)
-    async def close_view(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
-        await interaction.delete_original_response()
-        if self in bot.active_views:
-            bot.active_views.remove(self)
-        self.stop()
-
-    async def show_page(self, interaction: discord.Interaction):
-        start = self.page * self.items_per_page
-        end = min(start + self.items_per_page, len(self.items))
-        page_items = self.items[start:end]
-
-        description = ""
-        for item_id, name, url in page_items:
-            description += f"`#{item_id}` – {name}\n"
-
-        embed = discord.Embed(
-            title="All Items (Admin View)",
-            description=description or "No items on this page.",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Page {self.page+1} of {self.total_pages} • Total items: {len(self.items)}")
-
-        await interaction.edit_original_response(embed=embed, view=self)
-
-    async def on_timeout(self):
-        if self.message:
-            await self.message.edit(view=None)
-        if self in bot.active_views:
-            bot.active_views.remove(self)
-
 # ========== MYSTERY CRATE COMMANDS ==========
 
 @bot.tree.command(name="additem", description="Add an item to the mystery crate pool")
@@ -674,7 +603,7 @@ async def items(interaction: discord.Interaction):
 
     if len(items) > 25:
         await interaction.response.send_message(
-            f"Too many items ({len(items)}). Max 25. Use `/adminitems` for the full list.",
+            f"Too many items ({len(items)}). Max 25. Contact an admin to reduce the pool.",
             ephemeral=True
         )
         return
@@ -689,36 +618,6 @@ async def items(interaction: discord.Interaction):
     if url:
         embed.set_image(url=url)
     embed.set_footer(text=f"Item 1 of {len(items)} (use dropdown to change)")
-
-    await interaction.response.send_message(embed=embed, view=view)
-    view.message = await interaction.original_response()
-
-@bot.tree.command(name="adminitems", description="[Admin] List all items with IDs (paginated)")
-async def adminitems(interaction: discord.Interaction):
-    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-    if role not in interaction.user.roles:
-        await interaction.response.send_message("You need the **Cryysys** role to use this command.", ephemeral=True)
-        return
-
-    items = database.get_all_items()
-    if not items:
-        await interaction.response.send_message("No items in the pool.")
-        return
-
-    view = AdminItemListView(items, interaction.user.id)
-    start = 0
-    end = min(20, len(items))
-    page_items = items[start:end]
-    description = ""
-    for item_id, name, url in page_items:
-        description += f"`#{item_id}` – {name}\n"
-    embed = discord.Embed(
-        title="All Items (Admin View)",
-        description=description,
-        color=discord.Color.gold()
-    )
-    total_pages = (len(items) + 19) // 20
-    embed.set_footer(text=f"Page 1 of {total_pages} • Total items: {len(items)}")
 
     await interaction.response.send_message(embed=embed, view=view)
     view.message = await interaction.original_response()
@@ -759,138 +658,12 @@ async def draw(interaction: discord.Interaction):
         embed.set_image(url=item[2])
     await interaction.response.send_message(embed=embed)
 
-# ==========ITEM DB ============
-
-@bot.tree.command(name="importitems", description="[Admin] Import game items from SQL file (provide a URL)")
-@app_commands.describe(url="Direct download URL of the SQL file")
-async def importitems(interaction: discord.Interaction, url: str):
-    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-    if role not in interaction.user.roles:
-        await interaction.response.send_message("You need the **Cryysys** role to import items.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    # Download the file
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send(f"Failed to download file (HTTP {resp.status}).", ephemeral=True)
-                    return
-                # Read content (37 MB is fine)
-                content = await resp.read()
-        except Exception as e:
-            await interaction.followup.send(f"Download error: {e}", ephemeral=True)
-            return
-
-    # Try to decode as UTF-8 (assume SQL file is text)
-    try:
-        sql_text = content.decode('utf-8')
-    except UnicodeDecodeError:
-        await interaction.followup.send("File must be a text SQL file (UTF-8).", ephemeral=True)
-        return
-
-    # Import into database
-    try:
-        count = items_db.import_raw_items(sql_text)
-        await interaction.followup.send(f"✅ Imported {count} items into database.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Import failed: {e}", ephemeral=True)
-
-@bot.tree.command(name="addgameitem", description="[Admin] Add an item to the active list by its ID")
-@app_commands.describe(item_id="The item ID from the game database")
-async def addgameitem(interaction: discord.Interaction, item_id: int):
-    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-    if role not in interaction.user.roles:
-        await interaction.response.send_message("You need the **Cryysys** role to add items.", ephemeral=True)
-        return
-
-    if items_db.add_active_item(item_id):
-        await interaction.response.send_message(f"✅ Item #{item_id} added to active list.")
-    else:
-        await interaction.response.send_message(f"❌ Item #{item_id} not found in raw database or already active.", ephemeral=True)
-
-@bot.tree.command(name="removegameitem", description="[Admin] Remove an item from the active list")
-@app_commands.describe(item_id="The item ID to remove")
-async def removegameitem(interaction: discord.Interaction, item_id: int):
-    role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-    if role not in interaction.user.roles:
-        await interaction.response.send_message("You need the **Cryysys** role to remove items.", ephemeral=True)
-        return
-
-    if items_db.remove_active_item(item_id):
-        await interaction.response.send_message(f"✅ Item #{item_id} removed from active list.")
-    else:
-        await interaction.response.send_message(f"❌ Item #{item_id} not found in active list.", ephemeral=True)
-
-@bot.tree.command(name="listgameitems", description="List all active game items (paginated)")
-@app_commands.describe(page="Page number (starting from 1)")
-async def listgameitems(interaction: discord.Interaction, page: int = 1):
-    per_page = 20
-    offset = (page - 1) * per_page
-    items = items_db.get_active_items(offset, per_page)
-    total = items_db.count_active_items()
-    if not items:
-        await interaction.response.send_message("No active items yet.")
-        return
-
-    embed = discord.Embed(title="Active Game Items", color=discord.Color.green())
-    for item_id, name, type_, rarity, level in items:
-        embed.add_field(name=name, value=f"ID: {item_id} | {type_} | {rarity} | Lv.{level}", inline=False)
-    embed.set_footer(text=f"Page {page} of {(total + per_page - 1)//per_page} • {total} items")
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="searchitem", description="Search for items by name")
-@app_commands.describe(query="Item name (partial)")
-async def searchitem(interaction: discord.Interaction, query: str):
-    results = items_db.search_raw_items(query, limit=10)
-    if not results:
-        await interaction.response.send_message("No items found.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title=f"Search results for '{query}'", color=discord.Color.blue())
-    for item_id, name, type_, rarity in results:
-        embed.add_field(name=name, value=f"ID: {item_id} | {type_} | {rarity}", inline=False)
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="iteminfo", description="Get detailed info about an item")
-@app_commands.describe(item_id="The item ID")
-async def iteminfo(interaction: discord.Interaction, item_id: int):
-    item = items_db.get_item_details(item_id)
-    if not item:
-        await interaction.response.send_message("Item not found.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title=item['name'], description=item.get('description') or "No description", color=discord.Color.gold())
-    embed.add_field(name="Type", value=item['type'], inline=True)
-    embed.add_field(name="Rarity", value=item['rarity'], inline=True)
-    embed.add_field(name="Level", value=item['level'], inline=True)
-    embed.add_field(name="Equipable", value="Yes" if item['equipable'] else "No", inline=True)
-    embed.add_field(name="Tradable", value="Yes" if item['tradable'] else "No", inline=True)
-    embed.add_field(name="Value", value=item['value'], inline=True)
-    if item.get('market_low') and item.get('market_high'):
-        embed.add_field(name="Market Low", value=item['market_low'], inline=True)
-        embed.add_field(name="Market High", value=item['market_high'], inline=True)
-    if item.get('stat1'):
-        embed.add_field(name=f"{item['stat1']} +{item['stat1modifier']}", value="", inline=True)
-    if item.get('stat2'):
-        embed.add_field(name=f"{item['stat2']} +{item['stat2modifier']}", value="", inline=True)
-    if item.get('stat3'):
-        embed.add_field(name=f"{item['stat3']} +{item['stat3modifier']}", value="", inline=True)
-    if item.get('image_url'):
-        # You may need to prepend the base URL if the image_url is relative
-        embed.set_thumbnail(url=item['image_url'])
-    await interaction.response.send_message(embed=embed)
-
 # ========== BOT START ==========
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     database.init_db()
-    items_db.init_db()   # <-- add this line
     print("Database initialized.")
 
 if __name__ == "__main__":
