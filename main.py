@@ -47,15 +47,17 @@ def parse_amount(amount_str):
     original = amount_str.strip()
     amount_str = original.upper()
     multiplier = 1
+    # Check for billion suffix
     if amount_str.endswith('B'):
         amount_str = amount_str[:-1]
         multiplier = 1_000_000_000
     elif amount_str.endswith('M') or amount_str.endswith('MIL') or amount_str.endswith('MILLION'):
         amount_str = re.sub(r'(M|MIL|MILLION)$', '', amount_str)
         multiplier = 1_000_000
+    # Allow decimal numbers
     try:
         value = float(amount_str)
-        return int(value * multiplier), ''
+        return int(value * multiplier), ''  # currency is empty now
     except ValueError:
         return None, None
 
@@ -76,12 +78,13 @@ def format_number(num):
         return str(num)
 
 def format_price(amount, currency):
+    # currency is ignored for now (always empty string)
     return f"{format_number(amount)}"
 
 def plain_time(dt):
     return dt.strftime("%H:%M UTC")
 
-def format_timestamp(dt, style="f"):
+def format_timestamp(dt, style="R"):
     return f"<t:{int(dt.timestamp())}:{style}>"
 
 # ========== AUCTION DATA CLASS ==========
@@ -101,67 +104,63 @@ class Auction:
         self.currency_symbol = currency_symbol
         self.reminder_1h_sent = False
         self.reminder_5m_sent = False
-        self.loop_task = None
+        self.end_task = None
+        self.reminder_task = None
         self.last_bid_message = None
 
-# ========== AUCTION LOOP (POLLING) ==========
+# ========== AUCTION TIMER TASKS ==========
 
-async def auction_loop(channel_id):
-    await bot.wait_until_ready()
-    print(f"Starting auction loop for {channel_id}")
+async def auction_end_timer(auction):
+    """Sleep until the auction end time, then finalize."""
+    now = datetime.now(timezone.utc)
+    wait_seconds = (auction.end_time - now).total_seconds()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    # Check if auction still exists (might have been force?ended)
+    if auction.channel.id in bot.auctions:
+        await finalize_auction(auction.channel.id)
 
-    while True:
-        # Always fetch the current auction object
-        auction = bot.auctions.get(channel_id)
-        if not auction:
-            print(f"Auction {channel_id} not found, loop ending.")
-            break
+async def auction_reminders(auction):
+    """Send 1?hour and 5?minute reminders."""
+    now = datetime.now(timezone.utc)
+    end = auction.end_time
 
-        now = datetime.now(timezone.utc)
-        time_left = (auction.end_time - now).total_seconds()
-
-        # Debug: print time left occasionally
-        if time_left < 10:
-            print(f"Channel {channel_id}: time_left = {time_left:.2f}s")
-        elif int(time_left) % 30 == 0:
-            print(f"Channel {channel_id}: time_left = {time_left:.1f}s")
-
-        if time_left <= 0:
-            print(f"Time left <=0, finalizing auction {channel_id}")
-            await finalize_auction(channel_id)
-            break
-
-        # 1‑hour reminder
-        if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
+    # 1?hour reminder
+    one_hour = end - timedelta(hours=1)
+    if now < one_hour:
+        wait_1h = (one_hour - now).total_seconds()
+        if wait_1h > 0:
+            await asyncio.sleep(wait_1h)
+        # Check if auction still exists
+        if auction.channel.id in bot.auctions and not auction.reminder_1h_sent:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
-                await auction.channel.send(f"⏰ **1 hour left!** {mentions} final bids!")
+                await auction.channel.send(f"? **1 hour left!** {mentions} final bids!")
             else:
                 role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
                 if role:
-                    await auction.channel.send(f"⏰ **1 hour left!** {role.mention} no bids yet!")
+                    await auction.channel.send(f"? **1 hour left!** {role.mention} no bids yet!")
                 else:
-                    await auction.channel.send(f"⏰ **1 hour left!** No bids yet.")
+                    await auction.channel.send(f"? **1 hour left!** No bids yet.")
             auction.reminder_1h_sent = True
 
-        # 5‑minute reminder
-        if not auction.reminder_5m_sent and time_left <= 300 and time_left > 240:
+    # 5?minute reminder
+    five_min = end - timedelta(minutes=5)
+    if now < five_min:
+        wait_5m = (five_min - now).total_seconds()
+        if wait_5m > 0:
+            await asyncio.sleep(wait_5m)
+        if auction.channel.id in bot.auctions and not auction.reminder_5m_sent:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
-                await auction.channel.send(f"⏰ **5 minutes left!** {mentions} final bids!")
+                await auction.channel.send(f"? **5 minutes left!** {mentions} final bids!")
             else:
                 role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
                 if role:
-                    await auction.channel.send(f"⏰ **5 minutes left!** {role.mention} no bids yet!")
+                    await auction.channel.send(f"? **5 minutes left!** {role.mention} no bids yet!")
                 else:
-                    await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
+                    await auction.channel.send(f"? **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
-
-        # Sleep – check more often near the end
-        if time_left < 10:
-            await asyncio.sleep(1)
-        else:
-            await asyncio.sleep(10)
 
 # ========== SLASH COMMANDS (AUCTIONS) ==========
 
@@ -190,12 +189,6 @@ async def startauction(
         await interaction.response.send_message("An auction is already running in this channel!", ephemeral=True)
         return
 
-    # Check bot permissions
-    perms = interaction.channel.permissions_for(interaction.guild.me)
-    if not perms.send_messages:
-        await interaction.response.send_message("I need `Send Messages` permission in this channel.", ephemeral=True)
-        return
-
     delta = parse_duration(duration)
     if delta is None:
         await interaction.response.send_message("Invalid duration format. Use e.g. `1h30m` or `30m`. Max 48 hours.", ephemeral=True)
@@ -212,16 +205,18 @@ async def startauction(
 
     end_time = datetime.now(timezone.utc) + delta
 
-    # Plain text start message
-    start_text = (
-        f"**Auction Started!**\n"
-        f"**Item:** {item}\n"
-        f"**Seller:** {seller.mention}\n"
-        f"**Starting Price:** {format_price(start_val, currency)}\n"
-        f"**Min Increment:** {format_price(min_inc_val, currency)}\n"
-        f"**Ends:** {format_timestamp(end_time, 'f')}"
+    embed = discord.Embed(
+        title="Auction Started!",
+        description=(
+            f"**Item:** {item}\n"
+            f"**Seller:** {seller.mention}\n"
+            f"**Starting Price:** {format_price(start_val, currency)}\n"
+            f"**Min Increment:** {format_price(min_inc_val, currency)}\n"
+            f"**Ends:** {format_timestamp(end_time, 'R')}"
+        ),
+        color=discord.Color.green()
     )
-    await interaction.response.send_message(start_text)
+    await interaction.response.send_message(embed=embed)
     start_message = await interaction.original_response()
 
     auction = Auction(
@@ -236,7 +231,9 @@ async def startauction(
     )
     bot.auctions[interaction.channel_id] = auction
 
-    auction.loop_task = bot.loop.create_task(auction_loop(interaction.channel_id))
+    # Start timer tasks
+    auction.end_task = asyncio.create_task(auction_end_timer(auction))
+    auction.reminder_task = asyncio.create_task(auction_reminders(auction))
 
 @bot.tree.command(name="bid", description="Place a bid on the current auction.")
 @app_commands.describe(amount="Your bid amount (e.g. 150, 5M, 1.2B).")
@@ -270,34 +267,35 @@ async def bid(interaction: discord.Interaction, amount: str):
         auction.highest_bidder = interaction.user
         auction.bidders.add(interaction.user.id)
 
-        # Anti‑sniping is temporarily disabled to simplify testing.
-        # If you want it back, uncomment the following block.
-        # now = datetime.now(timezone.utc)
-        # time_left = (auction.end_time - now).total_seconds()
-        # if time_left <= 120:
-        #     auction.end_time += timedelta(minutes=1)
-        #     extended = True
+        now = datetime.now(timezone.utc)
+        time_left = (auction.end_time - now).total_seconds()
+        extended = False
+        if time_left <= 120:
+            auction.end_time += timedelta(minutes=1)
+            extended = True
+            # Cancel the old end task and start a new one with the updated time
+            if auction.end_task and not auction.end_task.done():
+                auction.end_task.cancel()
+            auction.end_task = asyncio.create_task(auction_end_timer(auction))
 
-        # Bid confirmation (plain text)
-        bid_text = (
-            f"**New Bid!**\n"
-            f"**Item:** {auction.item_name}\n"
-            f"**Bidder:** {interaction.user.mention}\n"
-            f"**New Price:** {format_price(bid_val, auction.currency_symbol)}\n\n"
-            f"🔔 Click the bell on this message to get notified if you're outbid!\n"
-            f"**Auction ends at:** {plain_time(auction.end_time)}"
+        extend_msg = "? **Anti?sniping activated!** Auction extended by 1 minute." if extended else ""
+        embed_bid = discord.Embed(
+            title="New Bid!",
+            description=(
+                f"**Item:** {auction.item_name}\n"
+                f"**Bidder:** {interaction.user.mention}\n"
+                f"**New Price:** {format_price(bid_val, auction.currency_symbol)}\n"
+                f"{extend_msg}\n\n"
+                f"?? Click the bell on this message to get notified if you're outbid!\n"
+                f"**Auction ends at:** {plain_time(auction.end_time)}"
+            ),
+            color=discord.Color.blue()
         )
-        bid_message = await interaction.followup.send(bid_text)
+        bid_message = await interaction.followup.send(embed=embed_bid)
 
-        # Try to add reaction; if fails, ignore
-        try:
-            await bid_message.add_reaction("🔔")
-            auction.last_bid_message = bid_message
-        except discord.Forbidden:
-            print(f"Could not add reaction to bid message in {interaction.channel.name} – missing Add Reactions permission")
-            auction.last_bid_message = None
+        await bid_message.add_reaction("??")
+        auction.last_bid_message = bid_message
 
-        # Outbid notification
         if old_highest and old_highest != interaction.user:
             pref_key = (interaction.channel_id, old_highest.id)
             if bot.notification_prefs.get(pref_key, False):
@@ -324,13 +322,16 @@ async def status(interaction: discord.Interaction):
         return
 
     highest = auction.highest_bidder.mention if auction.highest_bidder else "None"
-    status_text = (
-        f"**Auction: {auction.item_name}**\n"
-        f"**Current Price:** {format_price(auction.current_price, auction.currency_symbol)}\n"
-        f"**Highest Bidder:** {highest}\n"
-        f"**Ends:** {format_timestamp(auction.end_time, 'R')}"
+    embed = discord.Embed(
+        title=f"Auction: {auction.item_name}",
+        description=(
+            f"**Current Price:** {format_price(auction.current_price, auction.currency_symbol)}\n"
+            f"**Highest Bidder:** {highest}\n"
+            f"**Ends:** {format_timestamp(auction.end_time, 'R')}"
+        ),
+        color=discord.Color.purple()
     )
-    await interaction.response.send_message(status_text)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="endauction", description="Force-end the current auction (seller only).")
 async def endauction(interaction: discord.Interaction):
@@ -343,9 +344,11 @@ async def endauction(interaction: discord.Interaction):
         await interaction.response.send_message("Only the seller or an admin can force-end the auction.", ephemeral=True)
         return
 
-    # Cancel the loop task before finalizing
-    if auction.loop_task and not auction.loop_task.done():
-        auction.loop_task.cancel()
+    # Cancel timers before finalizing
+    if auction.end_task and not auction.end_task.done():
+        auction.end_task.cancel()
+    if auction.reminder_task and not auction.reminder_task.done():
+        auction.reminder_task.cancel()
 
     await finalize_auction(interaction.channel_id, forced=True)
     await interaction.response.send_message("Auction ended by moderator/seller.")
@@ -356,7 +359,7 @@ async def endauction(interaction: discord.Interaction):
 async def on_raw_reaction_add(payload):
     if payload.user_id == bot.user.id:
         return
-    if str(payload.emoji) != "🔔":
+    if str(payload.emoji) != "??":
         return
 
     auction = bot.auctions.get(payload.channel_id)
@@ -371,14 +374,11 @@ async def on_raw_reaction_add(payload):
 
     channel = bot.get_channel(payload.channel_id)
     if channel:
-        try:
-            message = await channel.fetch_message(payload.message_id)
-            if not current:
-                await message.channel.send(f"<@{payload.user_id}> will now be DM'd if outbid!", delete_after=5)
-            else:
-                await message.channel.send(f"<@{payload.user_id}> will no longer receive outbid notifications.", delete_after=5)
-        except:
-            pass
+        message = await channel.fetch_message(payload.message_id)
+        if not current:
+            await message.channel.send(f"<@{payload.user_id}> will now be DM'd if outbid!", delete_after=5)
+        else:
+            await message.channel.send(f"<@{payload.user_id}> will no longer receive outbid notifications.", delete_after=5)
 
 # ========== FINALIZE AUCTION ==========
 
@@ -401,15 +401,7 @@ async def finalize_auction(channel_id, forced=False):
     if auction.reminder_task and not auction.reminder_task.done():
         auction.reminder_task.cancel()
 
-    # ✅ Ensure we have a valid channel reference
-    try:
-        channel = bot.get_channel(channel_id)
-        if channel is None:
-            channel = await bot.fetch_channel(channel_id)
-    except Exception as e:
-        print(f"[FINALIZE] Failed to get channel: {e}")
-        return
-
+    channel = auction.channel
     winner = auction.highest_bidder
     price = auction.current_price
 
@@ -443,7 +435,6 @@ async def finalize_auction(channel_id, forced=False):
             print("[FINALIZE] DM sent to seller (no bids)")
     except Exception as e:
         print(f"[FINALIZE] Failed to DM seller: {e}")
-
 
 # ========== MYSTERY CRATE DROPDOWN VIEW ==========
 
@@ -527,7 +518,7 @@ async def additem(
 
     final_url = image.url if image else image_url
     item_id = database.add_item(name, final_url)
-    await interaction.response.send_message(f"✅ Item added with ID #{item_id}: {name}")
+    await interaction.response.send_message(f"? Item added with ID #{item_id}: {name}")
 
 @bot.tree.command(name="removeitem", description="Remove an item from the pool by ID")
 @app_commands.describe(item_id="The ID of the item to remove")
@@ -537,9 +528,9 @@ async def removeitem(interaction: discord.Interaction, item_id: int):
         await interaction.response.send_message("You need the **Cryysys** role to remove items.", ephemeral=True)
         return
     if database.remove_item(item_id):
-        await interaction.response.send_message(f"✅ Item #{item_id} removed.")
+        await interaction.response.send_message(f"? Item #{item_id} removed.")
     else:
-        await interaction.response.send_message(f"❌ Item #{item_id} not found.", ephemeral=True)
+        await interaction.response.send_message(f"? Item #{item_id} not found.", ephemeral=True)
 
 @bot.tree.command(name="addpoints", description="Add points to a user")
 @app_commands.describe(user="The user to reward", amount="Number of points")
@@ -549,7 +540,7 @@ async def addpoints(interaction: discord.Interaction, user: discord.Member, amou
         await interaction.response.send_message("You need the **Cryysys** role to add points.", ephemeral=True)
         return
     database.add_points(user.id, amount)
-    await interaction.response.send_message(f"✅ Added {amount} points to {user.mention}.")
+    await interaction.response.send_message(f"? Added {amount} points to {user.mention}.")
 
 @bot.tree.command(name="removepoints", description="Remove points from a user")
 @app_commands.describe(user="The user", amount="Number of points")
@@ -559,9 +550,9 @@ async def removepoints(interaction: discord.Interaction, user: discord.Member, a
         await interaction.response.send_message("You need the **Cryysys** role to remove points.", ephemeral=True)
         return
     if database.remove_points(user.id, amount):
-        await interaction.response.send_message(f"✅ Removed {amount} points from {user.mention}.")
+        await interaction.response.send_message(f"? Removed {amount} points from {user.mention}.")
     else:
-        await interaction.response.send_message(f"❌ {user.mention} doesn't have enough points.", ephemeral=True)
+        await interaction.response.send_message(f"? {user.mention} doesn't have enough points.", ephemeral=True)
 
 @bot.tree.command(name="setdrawcost", description="Set the points required per draw")
 @app_commands.describe(amount="Points per draw")
@@ -571,7 +562,7 @@ async def setdrawcost(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message("You need the **Cryysys** role to set draw cost.", ephemeral=True)
         return
     database.set_setting("draw_cost", str(amount))
-    await interaction.response.send_message(f"✅ Draw cost set to {amount} points.")
+    await interaction.response.send_message(f"? Draw cost set to {amount} points.")
 
 @bot.tree.command(name="items", description="Browse all items in the mystery crate pool")
 async def items(interaction: discord.Interaction):
@@ -629,7 +620,7 @@ async def draw(interaction: discord.Interaction):
     database.record_draw(user_id, item[0])
 
     embed = discord.Embed(
-        title="🎁 Mystery Box",
+        title="?? Mystery Box",
         description=f"You open the mystery box and get... **{item[1]}**!",
         color=discord.Color.green()
     )
