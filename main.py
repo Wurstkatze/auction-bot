@@ -139,20 +139,20 @@ async def auction_loop(channel_id):
             await finalize_auction(channel_id)
             break
 
-        # 1-hour reminder
-if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
-    if auction.bidders:
-        mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
-        await auction.channel.send(f"⏰ **1 hour left!** {mentions} final bids!")
-    else:
-        role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
-        if role:
-            await auction.channel.send(f"⏰ **1 hour left!** {role.mention} no bids yet!")
-        else:
-            await auction.channel.send(f"⏰ **1 hour left!** No bids yet.")
-    auction.reminder_1h_sent = True
+        # 1‑hour reminder (channel ping)
+        if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
+            if auction.bidders:
+                mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
+                await auction.channel.send(f"⏰ **1 hour left!** {mentions} final bids!")
+            else:
+                role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
+                if role:
+                    await auction.channel.send(f"⏰ **1 hour left!** {role.mention} no bids yet!")
+                else:
+                    await auction.channel.send(f"⏰ **1 hour left!** No bids yet.")
+            auction.reminder_1h_sent = True
 
-        # 5-minute reminder
+        # 5‑minute reminder (channel ping)
         if not auction.reminder_5m_sent and time_left <= 300 and time_left > 240:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
@@ -164,8 +164,6 @@ if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
                 else:
                     await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
-
-        # Removed: original message update block
 
         if time_left < 10:
             await asyncio.sleep(1)
