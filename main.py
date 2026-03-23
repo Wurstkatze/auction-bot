@@ -82,7 +82,6 @@ def plain_time(dt):
     return dt.strftime("%H:%M UTC")
 
 def format_timestamp(dt, style="f"):
-    # Use static time (no live timer) by default
     return f"<t:{int(dt.timestamp())}:{style}>"
 
 # ========== AUCTION DATA CLASS ==========
@@ -109,19 +108,26 @@ class Auction:
 
 async def auction_loop(channel_id):
     await bot.wait_until_ready()
-    auction = bot.auctions.get(channel_id)
-    if not auction:
-        return
+    print(f"Starting auction loop for {channel_id}")
 
     while True:
-        if channel_id not in bot.auctions:
+        # Always fetch the current auction object
+        auction = bot.auctions.get(channel_id)
+        if not auction:
+            print(f"Auction {channel_id} not found, loop ending.")
             break
 
         now = datetime.now(timezone.utc)
         time_left = (auction.end_time - now).total_seconds()
 
+        # Debug: print time left occasionally
+        if time_left < 10:
+            print(f"Channel {channel_id}: time_left = {time_left:.2f}s")
+        elif int(time_left) % 30 == 0:
+            print(f"Channel {channel_id}: time_left = {time_left:.1f}s")
+
         if time_left <= 0:
-            # End the auction
+            print(f"Time left <=0, finalizing auction {channel_id}")
             await finalize_auction(channel_id)
             break
 
@@ -151,7 +157,7 @@ async def auction_loop(channel_id):
                     await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
 
-        # Wait before next check (more frequent near end)
+        # Sleep – check more often near the end
         if time_left < 10:
             await asyncio.sleep(1)
         else:
@@ -206,7 +212,7 @@ async def startauction(
 
     end_time = datetime.now(timezone.utc) + delta
 
-    # Plain text start message (no embed)
+    # Plain text start message
     start_text = (
         f"**Auction Started!**\n"
         f"**Item:** {item}\n"
@@ -264,20 +270,20 @@ async def bid(interaction: discord.Interaction, amount: str):
         auction.highest_bidder = interaction.user
         auction.bidders.add(interaction.user.id)
 
-        now = datetime.now(timezone.utc)
-        time_left = (auction.end_time - now).total_seconds()
-        extended = False
-        if time_left <= 120:
-            auction.end_time += timedelta(minutes=1)
-            extended = True
+        # Anti‑sniping is temporarily disabled to simplify testing.
+        # If you want it back, uncomment the following block.
+        # now = datetime.now(timezone.utc)
+        # time_left = (auction.end_time - now).total_seconds()
+        # if time_left <= 120:
+        #     auction.end_time += timedelta(minutes=1)
+        #     extended = True
 
         # Bid confirmation (plain text)
-        extend_msg = "\n⏰ **Anti‑sniping activated!** Auction extended by 1 minute." if extended else ""
         bid_text = (
             f"**New Bid!**\n"
             f"**Item:** {auction.item_name}\n"
             f"**Bidder:** {interaction.user.mention}\n"
-            f"**New Price:** {format_price(bid_val, auction.currency_symbol)}{extend_msg}\n\n"
+            f"**New Price:** {format_price(bid_val, auction.currency_symbol)}\n\n"
             f"🔔 Click the bell on this message to get notified if you're outbid!\n"
             f"**Auction ends at:** {plain_time(auction.end_time)}"
         )
@@ -337,7 +343,7 @@ async def endauction(interaction: discord.Interaction):
         await interaction.response.send_message("Only the seller or an admin can force-end the auction.", ephemeral=True)
         return
 
-    # Cancel the loop task
+    # Cancel the loop task before finalizing
     if auction.loop_task and not auction.loop_task.done():
         auction.loop_task.cancel()
 
@@ -377,6 +383,7 @@ async def on_raw_reaction_add(payload):
 # ========== FINALIZE AUCTION ==========
 
 async def finalize_auction(channel_id, forced=False):
+    print(f"finalize_auction called for channel {channel_id} (forced={forced})")
     auction = bot.auctions.pop(channel_id, None)
     if not auction:
         print(f"[FINALIZE] Called but no auction found for {channel_id}")
@@ -389,7 +396,7 @@ async def finalize_auction(channel_id, forced=False):
     for key in keys_to_remove:
         del bot.notification_prefs[key]
 
-    # Cancel the loop task if still running
+    # Cancel loop task if still running
     if auction.loop_task and not auction.loop_task.done():
         auction.loop_task.cancel()
 
@@ -397,7 +404,7 @@ async def finalize_auction(channel_id, forced=False):
     winner = auction.highest_bidder
     price = auction.current_price
 
-    # Send channel message (plain text)
+    # Send channel message
     try:
         if winner:
             message = (
