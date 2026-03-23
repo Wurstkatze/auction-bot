@@ -400,33 +400,42 @@ async def finalize_auction(channel_id, forced=False):
     if auction.loop_task and not auction.loop_task.done():
         auction.loop_task.cancel()
 
-    # Get a fresh channel reference
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        print(f"[FINALIZE] Could not get channel {channel_id}")
-        return
+    # Try both channel references
+    channel = auction.channel
+    channel2 = bot.get_channel(channel_id)
+    if channel2 is None:
+        print(f"[FINALIZE] Could not get channel via bot.get_channel")
 
     winner = auction.highest_bidder
     price = auction.current_price
 
     print(f"[FINALIZE] Preparing to send channel message. Winner: {winner}, Price: {price}")
 
-    # Send channel message
-    try:
-        if winner:
-            message = (
-                f"**Auction ended for {auction.item_name}**\n"
-                f"Seller: {auction.seller.mention}\n"
-                f"Winner: {winner.mention}\n"
-                f"Final amount: {format_price(price, auction.currency_symbol)}"
-            )
-            await channel.send(message)
-            print(f"[FINALIZE] Channel message sent for winner {winner}")
-        else:
-            await channel.send(f"Auction for **{auction.item_name}** ended with no bids.")
-            print("[FINALIZE] Channel message sent (no bids)")
-    except Exception as e:
-        print(f"[FINALIZE] Failed to send channel message: {e}")
+    # Send channel message using stored auction.channel (fallback to fetched channel)
+    for ch in [channel, channel2]:
+        if ch is None:
+            continue
+        try:
+            if winner:
+                message = (
+                    f"**Auction ended for {auction.item_name}**\n"
+                    f"Seller: {auction.seller.mention}\n"
+                    f"Winner: {winner.mention}\n"
+                    f"Final amount: {format_price(price, auction.currency_symbol)}"
+                )
+                await asyncio.wait_for(ch.send(message), timeout=5)
+                print(f"[FINALIZE] Channel message sent for winner {winner} via {ch}")
+                break
+            else:
+                await asyncio.wait_for(ch.send(f"Auction for **{auction.item_name}** ended with no bids."), timeout=5)
+                print(f"[FINALIZE] Channel message sent (no bids) via {ch}")
+                break
+        except asyncio.TimeoutError:
+            print(f"[FINALIZE] Timeout sending message to {ch} (maybe rate limited)")
+        except Exception as e:
+            print(f"[FINALIZE] Failed to send channel message to {ch}: {e}")
+    else:
+        print("[FINALIZE] Could not send channel message to any channel reference.")
 
     # Send seller DM
     try:
