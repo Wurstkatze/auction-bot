@@ -47,17 +47,15 @@ def parse_amount(amount_str):
     original = amount_str.strip()
     amount_str = original.upper()
     multiplier = 1
-    # Check for billion suffix
     if amount_str.endswith('B'):
         amount_str = amount_str[:-1]
         multiplier = 1_000_000_000
     elif amount_str.endswith('M') or amount_str.endswith('MIL') or amount_str.endswith('MILLION'):
         amount_str = re.sub(r'(M|MIL|MILLION)$', '', amount_str)
         multiplier = 1_000_000
-    # Allow decimal numbers
     try:
         value = float(amount_str)
-        return int(value * multiplier), ''  # currency is empty now
+        return int(value * multiplier), ''
     except ValueError:
         return None, None
 
@@ -78,7 +76,6 @@ def format_number(num):
         return str(num)
 
 def format_price(amount, currency):
-    # currency is ignored for now (always empty string)
     return f"{format_number(amount)}"
 
 def plain_time(dt):
@@ -104,35 +101,31 @@ class Auction:
         self.currency_symbol = currency_symbol
         self.reminder_1h_sent = False
         self.reminder_5m_sent = False
-        self.end_task = None
-        self.reminder_task = None
+        self.loop_task = None
         self.last_bid_message = None
 
-# ========== AUCTION TIMER TASKS ==========
+# ========== AUCTION LOOP (POLLING) ==========
 
-async def auction_end_timer(auction):
-    """Sleep until the auction end time, then finalize."""
-    now = datetime.now(timezone.utc)
-    wait_seconds = (auction.end_time - now).total_seconds()
-    if wait_seconds > 0:
-        await asyncio.sleep(wait_seconds)
-    # Check if auction still exists (might have been force‑ended)
-    if auction.channel.id in bot.auctions:
-        await finalize_auction(auction.channel.id)
+async def auction_loop(channel_id):
+    await bot.wait_until_ready()
+    auction = bot.auctions.get(channel_id)
+    if not auction:
+        return
 
-async def auction_reminders(auction):
-    """Send 1‑hour and 5‑minute reminders."""
-    now = datetime.now(timezone.utc)
-    end = auction.end_time
+    while True:
+        if channel_id not in bot.auctions:
+            break
 
-    # 1‑hour reminder
-    one_hour = end - timedelta(hours=1)
-    if now < one_hour:
-        wait_1h = (one_hour - now).total_seconds()
-        if wait_1h > 0:
-            await asyncio.sleep(wait_1h)
-        # Check if auction still exists
-        if auction.channel.id in bot.auctions and not auction.reminder_1h_sent:
+        now = datetime.now(timezone.utc)
+        time_left = (auction.end_time - now).total_seconds()
+
+        # End auction if time is up
+        if time_left <= 0:
+            await finalize_auction(channel_id)
+            break
+
+        # 1-hour reminder (only once, in channel)
+        if not auction.reminder_1h_sent and time_left <= 3600 and time_left > 3540:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
                 await auction.channel.send(f"⏰ **1 hour left!** {mentions} final bids!")
@@ -144,13 +137,8 @@ async def auction_reminders(auction):
                     await auction.channel.send(f"⏰ **1 hour left!** No bids yet.")
             auction.reminder_1h_sent = True
 
-    # 5‑minute reminder
-    five_min = end - timedelta(minutes=5)
-    if now < five_min:
-        wait_5m = (five_min - now).total_seconds()
-        if wait_5m > 0:
-            await asyncio.sleep(wait_5m)
-        if auction.channel.id in bot.auctions and not auction.reminder_5m_sent:
+        # 5-minute reminder (only once, in channel)
+        if not auction.reminder_5m_sent and time_left <= 300 and time_left > 240:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
                 await auction.channel.send(f"⏰ **5 minutes left!** {mentions} final bids!")
@@ -161,6 +149,12 @@ async def auction_reminders(auction):
                 else:
                     await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
+
+        # Wait before next check
+        if time_left < 10:
+            await asyncio.sleep(1)
+        else:
+            await asyncio.sleep(10)
 
 # ========== SLASH COMMANDS (AUCTIONS) ==========
 
@@ -231,9 +225,7 @@ async def startauction(
     )
     bot.auctions[interaction.channel_id] = auction
 
-    # Start timer tasks
-    auction.end_task = asyncio.create_task(auction_end_timer(auction))
-    auction.reminder_task = asyncio.create_task(auction_reminders(auction))
+    auction.loop_task = bot.loop.create_task(auction_loop(interaction.channel_id))
 
 @bot.tree.command(name="bid", description="Place a bid on the current auction.")
 @app_commands.describe(amount="Your bid amount (e.g. 150, 5M, 1.2B).")
@@ -273,11 +265,8 @@ async def bid(interaction: discord.Interaction, amount: str):
         if time_left <= 120:
             auction.end_time += timedelta(minutes=1)
             extended = True
-            # Cancel the old end task and start a new one with the updated time
-            if auction.end_task and not auction.end_task.done():
-                auction.end_task.cancel()
-            auction.end_task = asyncio.create_task(auction_end_timer(auction))
 
+        # No start message edit – only send bid confirmation
         extend_msg = "⏰ **Anti‑sniping activated!** Auction extended by 1 minute." if extended else ""
         embed_bid = discord.Embed(
             title="New Bid!",
@@ -344,11 +333,9 @@ async def endauction(interaction: discord.Interaction):
         await interaction.response.send_message("Only the seller or an admin can force-end the auction.", ephemeral=True)
         return
 
-    # Cancel timers before finalizing
-    if auction.end_task and not auction.end_task.done():
-        auction.end_task.cancel()
-    if auction.reminder_task and not auction.reminder_task.done():
-        auction.reminder_task.cancel()
+    # Cancel the loop task before finalizing
+    if auction.loop_task and not auction.loop_task.done():
+        auction.loop_task.cancel()
 
     await finalize_auction(interaction.channel_id, forced=True)
     await interaction.response.send_message("Auction ended by moderator/seller.")
@@ -395,17 +382,15 @@ async def finalize_auction(channel_id, forced=False):
     for key in keys_to_remove:
         del bot.notification_prefs[key]
 
-    # Cancel any remaining tasks
-    if auction.end_task and not auction.end_task.done():
-        auction.end_task.cancel()
-    if auction.reminder_task and not auction.reminder_task.done():
-        auction.reminder_task.cancel()
+    # Cancel loop task if still running
+    if auction.loop_task and not auction.loop_task.done():
+        auction.loop_task.cancel()
 
     channel = auction.channel
     winner = auction.highest_bidder
     price = auction.current_price
 
-    # Channel message
+    # Send channel message (plain text)
     try:
         if winner:
             message = (
@@ -422,7 +407,7 @@ async def finalize_auction(channel_id, forced=False):
     except Exception as e:
         print(f"[FINALIZE] Failed to send channel message: {e}")
 
-    # Seller DM
+    # Send seller DM
     try:
         if winner:
             await auction.seller.send(
