@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import database
+import traceback # Add this at the top of main.py
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -16,6 +17,23 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.reactions = True
+
+async def auction_end_timer(auction):
+    """Wait until the end time and finalize."""
+    try:
+        now = datetime.now(timezone.utc)
+        wait_seconds = (auction.end_time - now).total_seconds()
+        
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+            
+        # Check if the auction was already ended or replaced
+        if auction.channel.id in bot.auctions:
+            # IMPORTANT: Pass the auction OBJECT, not just the ID
+            await finalize_auction(auction) 
+    except Exception as e:
+        print(f"!!! CRITICAL ERROR IN TIMER for {auction.item_name} !!!")
+        traceback.print_exc()
 
 class AuctionBot(commands.Bot):
     def __init__(self):
@@ -341,22 +359,28 @@ async def status(interaction: discord.Interaction):
 
 @bot.tree.command(name="endauction", description="Force-end the current auction (seller only).")
 async def endauction(interaction: discord.Interaction):
+    # Retrieve the auction object for this channel
     auction = bot.auctions.get(interaction.channel_id)
+    
     if not auction:
         await interaction.response.send_message("No auction running in this channel.", ephemeral=True)
         return
 
+    # Check if the user is the seller or an admin
     if interaction.user != auction.seller and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("Only the seller or an admin can force-end the auction.", ephemeral=True)
         return
 
-    # Cancel tasks before finalizing
+    # Cancel background tasks immediately to prevent duplicate "End" triggers
     if auction.end_task and not auction.end_task.done():
         auction.end_task.cancel()
     if auction.reminder_task and not auction.reminder_task.done():
         auction.reminder_task.cancel()
 
-    await finalize_auction(interaction.channel_id, forced=True)
+    # We pass the WHOLE auction object, ensuring we have the direct channel reference
+    await finalize_auction(auction, forced=True)
+    
+    # Simple confirmation for the user who ran the command
     await interaction.response.send_message("Auction ended by moderator/seller.")
 
 # ========== REACTION HANDLER ==========
@@ -391,73 +415,56 @@ async def on_raw_reaction_add(payload):
 
 # ========== FINALIZE AUCTION ==========
 
-async def finalize_auction(channel_id, forced=False):
-    print(f"[FINALIZE] Starting finalization for channel {channel_id} (forced={forced})")
-    
-    # 1. Pop the auction first so no more bids can come in
-    auction = bot.auctions.pop(channel_id, None)
+async def finalize_auction(auction_or_id, forced=False):
+    """
+    Finalizes the auction. 
+    Accepts either an Auction object (preferred) or a channel ID (for fallback).
+    """
+    # 1. Determine if we were given an object or an ID
+    if isinstance(auction_or_id, int):
+        auction = bot.auctions.pop(auction_or_id, None)
+    else:
+        auction = auction_or_id
+        # Remove it from the dictionary so no more bids can be placed
+        bot.auctions.pop(auction.channel.id, None)
+
     if not auction:
-        print(f"[FINALIZE] No active auction found for {channel_id}")
         return
 
-    # 2. Clean up tasks
-    if auction.end_task and not auction.end_task.done():
-        auction.end_task.cancel()
-    if auction.reminder_task and not auction.reminder_task.done():
-        auction.reminder_task.cancel()
-
-    # 3. GET THE CHANNEL (The most likely failure point)
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            # If it's not in cache, fetch it from Discord API
-            channel = await bot.fetch_channel(channel_id)
-        except Exception as e:
-            print(f"[FINALIZE] Critical Error: Could not fetch channel {channel_id}: {e}")
-            return
-
+    # 2. Use the direct references saved in the Auction object
+    channel = auction.channel 
+    seller = auction.seller
     winner = auction.highest_bidder
     price = auction.current_price
 
-    # 4. Prepare message
+    # 3. Prepare the announcement message
     if winner:
-        end_msg = (
-            f"🎊 **The auction for {auction.item_name} has ended!** 🎊\n"
-            f"**Seller:** {auction.seller.mention}\n"
+        message = (
+            f"🎊 **Auction ended for {auction.item_name}** 🎊\n"
+            f"**Seller:** {seller.mention}\n"
             f"**Winner:** {winner.mention}\n"
-            f"**Final Price:** {format_price(price, auction.currency_symbol)}"
+            f"**Final amount:** {format_price(price, auction.currency_symbol)}"
         )
     else:
-        end_msg = f"The auction for **{auction.item_name}** has ended with no bids."
+        message = f"Auction for **{auction.item_name}** ended with no bids."
 
-    # 5. Send to Channel
+    # 4. Send to the channel (using the reliable direct reference)
     try:
-        # Removed asyncio.wait_for as it often causes silent failures during API lag
-        await channel.send(end_msg)
-        print(f"[FINALIZE] Success: Channel message sent to {channel.name}")
-    except discord.Forbidden:
-        print(f"[FINALIZE] Error: Bot lacks permission to send messages in {channel_id}")
+        await channel.send(message)
     except Exception as e:
-        print(f"[FINALIZE] Unexpected error sending channel message: {e}")
+        print(f"[ERROR] Could not send end message to channel {channel.id}: {e}")
 
-    # 6. DM the Seller
+    # 5. DM the Seller
     try:
         if winner:
-            dm_text = (f"Your auction for **{auction.item_name}** ended successfully!\n"
-                       f"Winner: {winner.name} ({winner.id})\n"
-                       f"Final Amount: {format_price(price, auction.currency_symbol)}")
+            await seller.send(
+                f"Your auction for **{auction.item_name}** ended.\n"
+                f"Winner: {winner} with {format_price(price, auction.currency_symbol)}."
+            )
         else:
-            dm_text = f"Your auction for **{auction.item_name}** ended with no bids."
-        
-        await auction.seller.send(dm_text)
-        print(f"[FINALIZE] Success: DM sent to seller {auction.seller}")
+            await seller.send(f"Your auction for **{auction.item_name}** ended with no bids.")
     except Exception as e:
-        print(f"[FINALIZE] Could not DM seller: {e}")
-
-    # 7. Clean up notification prefs
-    keys_to_remove = [k for k in bot.notification_prefs.keys() if k[0] == channel_id]
-    for key in keys_to_remove:
-        bot.notification_prefs.pop(key, None)
+        print(f"[ERROR] Could not DM seller {seller.id}: {e}")
 
 # ========== MYSTERY CRATE DROPDOWN VIEW ==========
 
