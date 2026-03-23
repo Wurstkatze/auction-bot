@@ -47,17 +47,15 @@ def parse_amount(amount_str):
     original = amount_str.strip()
     amount_str = original.upper()
     multiplier = 1
-    # Check for billion suffix
     if amount_str.endswith('B'):
         amount_str = amount_str[:-1]
         multiplier = 1_000_000_000
     elif amount_str.endswith('M') or amount_str.endswith('MIL') or amount_str.endswith('MILLION'):
         amount_str = re.sub(r'(M|MIL|MILLION)$', '', amount_str)
         multiplier = 1_000_000
-    # Allow decimal numbers
     try:
         value = float(amount_str)
-        return int(value * multiplier), ''  # currency is empty now
+        return int(value * multiplier), ''
     except ValueError:
         return None, None
 
@@ -78,13 +76,12 @@ def format_number(num):
         return str(num)
 
 def format_price(amount, currency):
-    # currency is ignored for now (always empty string)
     return f"{format_number(amount)}"
 
 def plain_time(dt):
     return dt.strftime("%H:%M UTC")
 
-def format_timestamp(dt, style="R"):
+def format_timestamp(dt, style="f"):
     return f"<t:{int(dt.timestamp())}:{style}>"
 
 # ========== AUCTION DATA CLASS ==========
@@ -111,40 +108,39 @@ class Auction:
 # ========== AUCTION TIMER TASKS ==========
 
 async def auction_end_timer(auction):
-    """Sleep until the auction end time, then finalize."""
+    """Wait until the end time and finalize."""
     now = datetime.now(timezone.utc)
     wait_seconds = (auction.end_time - now).total_seconds()
     if wait_seconds > 0:
         await asyncio.sleep(wait_seconds)
-    # Check if auction still exists (might have been force?ended)
+    # Finalize if auction still exists
     if auction.channel.id in bot.auctions:
         await finalize_auction(auction.channel.id)
 
 async def auction_reminders(auction):
-    """Send 1?hour and 5?minute reminders."""
+    """Send 1-hour and 5-minute reminders."""
     now = datetime.now(timezone.utc)
     end = auction.end_time
 
-    # 1?hour reminder
+    # 1-hour reminder
     one_hour = end - timedelta(hours=1)
     if now < one_hour:
         wait_1h = (one_hour - now).total_seconds()
         if wait_1h > 0:
             await asyncio.sleep(wait_1h)
-        # Check if auction still exists
         if auction.channel.id in bot.auctions and not auction.reminder_1h_sent:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
-                await auction.channel.send(f"? **1 hour left!** {mentions} final bids!")
+                await auction.channel.send(f"⏰ **1 hour left!** {mentions} final bids!")
             else:
                 role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
                 if role:
-                    await auction.channel.send(f"? **1 hour left!** {role.mention} no bids yet!")
+                    await auction.channel.send(f"⏰ **1 hour left!** {role.mention} no bids yet!")
                 else:
-                    await auction.channel.send(f"? **1 hour left!** No bids yet.")
+                    await auction.channel.send(f"⏰ **1 hour left!** No bids yet.")
             auction.reminder_1h_sent = True
 
-    # 5?minute reminder
+    # 5-minute reminder
     five_min = end - timedelta(minutes=5)
     if now < five_min:
         wait_5m = (five_min - now).total_seconds()
@@ -153,13 +149,13 @@ async def auction_reminders(auction):
         if auction.channel.id in bot.auctions and not auction.reminder_5m_sent:
             if auction.bidders:
                 mentions = ' '.join(f"<@{uid}>" for uid in auction.bidders)
-                await auction.channel.send(f"? **5 minutes left!** {mentions} final bids!")
+                await auction.channel.send(f"⏰ **5 minutes left!** {mentions} final bids!")
             else:
                 role = discord.utils.get(auction.channel.guild.roles, name="Auction Lover")
                 if role:
-                    await auction.channel.send(f"? **5 minutes left!** {role.mention} no bids yet!")
+                    await auction.channel.send(f"⏰ **5 minutes left!** {role.mention} no bids yet!")
                 else:
-                    await auction.channel.send(f"? **5 minutes left!** No bids yet.")
+                    await auction.channel.send(f"⏰ **5 minutes left!** No bids yet.")
             auction.reminder_5m_sent = True
 
 # ========== SLASH COMMANDS (AUCTIONS) ==========
@@ -187,6 +183,12 @@ async def startauction(
 
     if interaction.channel_id in bot.auctions:
         await interaction.response.send_message("An auction is already running in this channel!", ephemeral=True)
+        return
+
+    # Check bot permissions
+    perms = interaction.channel.permissions_for(interaction.guild.me)
+    if not perms.send_messages:
+        await interaction.response.send_message("I need `Send Messages` permission in this channel.", ephemeral=True)
         return
 
     delta = parse_duration(duration)
@@ -231,7 +233,6 @@ async def startauction(
     )
     bot.auctions[interaction.channel_id] = auction
 
-    # Start timer tasks
     auction.end_task = asyncio.create_task(auction_end_timer(auction))
     auction.reminder_task = asyncio.create_task(auction_reminders(auction))
 
@@ -273,12 +274,12 @@ async def bid(interaction: discord.Interaction, amount: str):
         if time_left <= 120:
             auction.end_time += timedelta(minutes=1)
             extended = True
-            # Cancel the old end task and start a new one with the updated time
+            # Cancel old end task and start new one
             if auction.end_task and not auction.end_task.done():
                 auction.end_task.cancel()
             auction.end_task = asyncio.create_task(auction_end_timer(auction))
 
-        extend_msg = "? **Anti?sniping activated!** Auction extended by 1 minute." if extended else ""
+        extend_msg = "⏰ **Anti‑sniping activated!** Auction extended by 1 minute." if extended else ""
         embed_bid = discord.Embed(
             title="New Bid!",
             description=(
@@ -286,15 +287,20 @@ async def bid(interaction: discord.Interaction, amount: str):
                 f"**Bidder:** {interaction.user.mention}\n"
                 f"**New Price:** {format_price(bid_val, auction.currency_symbol)}\n"
                 f"{extend_msg}\n\n"
-                f"?? Click the bell on this message to get notified if you're outbid!\n"
+                f"🔔 Click the bell on this message to get notified if you're outbid!\n"
                 f"**Auction ends at:** {plain_time(auction.end_time)}"
             ),
             color=discord.Color.blue()
         )
         bid_message = await interaction.followup.send(embed=embed_bid)
 
-        await bid_message.add_reaction("??")
-        auction.last_bid_message = bid_message
+        # Try to add reaction; if fails, ignore
+        try:
+            await bid_message.add_reaction("🔔")
+            auction.last_bid_message = bid_message
+        except discord.Forbidden:
+            print(f"Could not add reaction to bid message in {interaction.channel.name}")
+            auction.last_bid_message = None
 
         if old_highest and old_highest != interaction.user:
             pref_key = (interaction.channel_id, old_highest.id)
@@ -344,7 +350,7 @@ async def endauction(interaction: discord.Interaction):
         await interaction.response.send_message("Only the seller or an admin can force-end the auction.", ephemeral=True)
         return
 
-    # Cancel timers before finalizing
+    # Cancel tasks before finalizing
     if auction.end_task and not auction.end_task.done():
         auction.end_task.cancel()
     if auction.reminder_task and not auction.reminder_task.done():
@@ -359,7 +365,7 @@ async def endauction(interaction: discord.Interaction):
 async def on_raw_reaction_add(payload):
     if payload.user_id == bot.user.id:
         return
-    if str(payload.emoji) != "??":
+    if str(payload.emoji) != "🔔":
         return
 
     auction = bot.auctions.get(payload.channel_id)
@@ -374,15 +380,19 @@ async def on_raw_reaction_add(payload):
 
     channel = bot.get_channel(payload.channel_id)
     if channel:
-        message = await channel.fetch_message(payload.message_id)
-        if not current:
-            await message.channel.send(f"<@{payload.user_id}> will now be DM'd if outbid!", delete_after=5)
-        else:
-            await message.channel.send(f"<@{payload.user_id}> will no longer receive outbid notifications.", delete_after=5)
+        try:
+            message = await channel.fetch_message(payload.message_id)
+            if not current:
+                await message.channel.send(f"<@{payload.user_id}> will now be DM'd if outbid!", delete_after=5)
+            else:
+                await message.channel.send(f"<@{payload.user_id}> will no longer receive outbid notifications.", delete_after=5)
+        except:
+            pass
 
 # ========== FINALIZE AUCTION ==========
 
 async def finalize_auction(channel_id, forced=False):
+    print(f"finalize_auction called for channel {channel_id} (forced={forced})")
     auction = bot.auctions.pop(channel_id, None)
     if not auction:
         print(f"[FINALIZE] Called but no auction found for {channel_id}")
@@ -395,30 +405,43 @@ async def finalize_auction(channel_id, forced=False):
     for key in keys_to_remove:
         del bot.notification_prefs[key]
 
-    # Cancel any remaining tasks
+    # Cancel tasks if still present
     if auction.end_task and not auction.end_task.done():
         auction.end_task.cancel()
     if auction.reminder_task and not auction.reminder_task.done():
         auction.reminder_task.cancel()
 
-    channel = auction.channel
+    # Get fresh channel reference
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        print(f"[FINALIZE] Could not get channel {channel_id}")
+        return
+
+    # Ensure the bot can send messages
+    perms = channel.permissions_for(channel.guild.me)
+    print(f"[FINALIZE] Bot permissions in channel: send_messages={perms.send_messages}, read_messages={perms.read_messages}")
+
     winner = auction.highest_bidder
     price = auction.current_price
 
-    # Channel message
+    # Prepare end message
+    if winner:
+        message = (
+            f"**Auction ended for {auction.item_name}**\n"
+            f"Seller: {auction.seller.mention}\n"
+            f"Winner: {winner.mention}\n"
+            f"Final amount: {format_price(price, auction.currency_symbol)}"
+        )
+    else:
+        message = f"Auction for **{auction.item_name}** ended with no bids."
+
+    # Try to send with asyncio.to_thread to avoid blocking
     try:
-        if winner:
-            message = (
-                f"**Auction ended for {auction.item_name}**\n"
-                f"Seller: {auction.seller.mention}\n"
-                f"Winner: {winner.mention}\n"
-                f"Final amount: {format_price(price, auction.currency_symbol)}"
-            )
-            await channel.send(message)
-            print(f"[FINALIZE] Channel message sent for winner {winner}")
-        else:
-            await channel.send(f"Auction for **{auction.item_name}** ended with no bids.")
-            print("[FINALIZE] Channel message sent (no bids)")
+        print("[FINALIZE] Attempting to send channel message...")
+        await asyncio.wait_for(channel.send(message), timeout=10)
+        print(f"[FINALIZE] Channel message sent for {winner if winner else 'no winner'}")
+    except asyncio.TimeoutError:
+        print("[FINALIZE] Timeout sending channel message (10 seconds)")
     except Exception as e:
         print(f"[FINALIZE] Failed to send channel message: {e}")
 
@@ -518,7 +541,7 @@ async def additem(
 
     final_url = image.url if image else image_url
     item_id = database.add_item(name, final_url)
-    await interaction.response.send_message(f"? Item added with ID #{item_id}: {name}")
+    await interaction.response.send_message(f"✅ Item added with ID #{item_id}: {name}")
 
 @bot.tree.command(name="removeitem", description="Remove an item from the pool by ID")
 @app_commands.describe(item_id="The ID of the item to remove")
@@ -528,9 +551,9 @@ async def removeitem(interaction: discord.Interaction, item_id: int):
         await interaction.response.send_message("You need the **Cryysys** role to remove items.", ephemeral=True)
         return
     if database.remove_item(item_id):
-        await interaction.response.send_message(f"? Item #{item_id} removed.")
+        await interaction.response.send_message(f"✅ Item #{item_id} removed.")
     else:
-        await interaction.response.send_message(f"? Item #{item_id} not found.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Item #{item_id} not found.", ephemeral=True)
 
 @bot.tree.command(name="addpoints", description="Add points to a user")
 @app_commands.describe(user="The user to reward", amount="Number of points")
@@ -540,7 +563,7 @@ async def addpoints(interaction: discord.Interaction, user: discord.Member, amou
         await interaction.response.send_message("You need the **Cryysys** role to add points.", ephemeral=True)
         return
     database.add_points(user.id, amount)
-    await interaction.response.send_message(f"? Added {amount} points to {user.mention}.")
+    await interaction.response.send_message(f"✅ Added {amount} points to {user.mention}.")
 
 @bot.tree.command(name="removepoints", description="Remove points from a user")
 @app_commands.describe(user="The user", amount="Number of points")
@@ -550,9 +573,9 @@ async def removepoints(interaction: discord.Interaction, user: discord.Member, a
         await interaction.response.send_message("You need the **Cryysys** role to remove points.", ephemeral=True)
         return
     if database.remove_points(user.id, amount):
-        await interaction.response.send_message(f"? Removed {amount} points from {user.mention}.")
+        await interaction.response.send_message(f"✅ Removed {amount} points from {user.mention}.")
     else:
-        await interaction.response.send_message(f"? {user.mention} doesn't have enough points.", ephemeral=True)
+        await interaction.response.send_message(f"❌ {user.mention} doesn't have enough points.", ephemeral=True)
 
 @bot.tree.command(name="setdrawcost", description="Set the points required per draw")
 @app_commands.describe(amount="Points per draw")
@@ -562,7 +585,7 @@ async def setdrawcost(interaction: discord.Interaction, amount: int):
         await interaction.response.send_message("You need the **Cryysys** role to set draw cost.", ephemeral=True)
         return
     database.set_setting("draw_cost", str(amount))
-    await interaction.response.send_message(f"? Draw cost set to {amount} points.")
+    await interaction.response.send_message(f"✅ Draw cost set to {amount} points.")
 
 @bot.tree.command(name="items", description="Browse all items in the mystery crate pool")
 async def items(interaction: discord.Interaction):
@@ -620,7 +643,7 @@ async def draw(interaction: discord.Interaction):
     database.record_draw(user_id, item[0])
 
     embed = discord.Embed(
-        title="?? Mystery Box",
+        title="🎁 Mystery Box",
         description=f"You open the mystery box and get... **{item[1]}**!",
         color=discord.Color.green()
     )
