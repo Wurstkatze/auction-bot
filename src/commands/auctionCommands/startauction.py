@@ -33,7 +33,11 @@ def register(bot):
         image_url: str | None = None,
     ):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "You need to be in a server to use this command.", ephemeral=True
+            )
             return
+
         role = discord.utils.get(interaction.guild.roles, name="Cryysys")
         if role not in interaction.user.roles:
             await interaction.response.send_message(
