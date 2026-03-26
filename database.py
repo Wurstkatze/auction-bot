@@ -216,7 +216,9 @@ def add_scheduled_auction(
 def get_pending_auctions():
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM scheduled_auctions ORDER BY start_time ASC")
+    c.execute(
+        "SELECT id, channel_id, seller_id, item_name, duration, start_price, min_increment, image_url, start_time FROM scheduled_auctions ORDER BY start_time ASC"
+    )
     rows = c.fetchall()
     conn.close()
     return rows
@@ -275,9 +277,7 @@ def get_scheduled_notifs(auction_id):
 def get_channel_upcoming(channel_id, limit=None):
     conn = get_connection()
     c = conn.cursor()
-    query = (
-        "SELECT * FROM scheduled_auctions WHERE channel_id = ? ORDER BY start_time ASC"
-    )
+    query = "SELECT id, channel_id, seller_id, item_name, duration, start_price, min_increment, image_url, start_time FROM scheduled_auctions WHERE channel_id = ? ORDER BY start_time ASC"
     if limit:
         query += f" LIMIT {limit}"
     c.execute(query, (channel_id,))

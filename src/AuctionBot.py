@@ -46,7 +46,7 @@ class AuctionBot(commands.Bot):
                     )
                 else:
                     await interaction.response.send_message(
-                        "🔕 You will no longer be notified when the auction for **{item_name}** starts.",
+                        f"🔕 You will no longer be notified when the auction for **{item_name}** starts.",
                         ephemeral=True,
                     )
 
