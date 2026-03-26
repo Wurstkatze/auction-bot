@@ -1,7 +1,8 @@
-from discord import Member, guild
+import discord
+from discord import Member
 
 
-async def get_guild_member(guild_channel: guild.GuildChannel, member_id: int) -> Member:
+async def get_guild_member(guild_channel: discord.TextChannel, member_id: int) -> Member:
     """
     Get a guild member (try cached, then API).
     Lets discord exceptions fall through.
