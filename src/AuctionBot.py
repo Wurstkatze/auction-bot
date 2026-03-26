@@ -2,10 +2,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import asyncio
 
+import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timezone
 
-from database import get_pending_auctions, remove_scheduled_auction
+import database
 from src.auctionFunctions.trigger_auction import trigger_auction
 from src.helperFunctions.parse_duration import parse_duration
 from src.helperFunctions.parse_amount import parse_amount
@@ -22,24 +23,48 @@ class AuctionBot(commands.Bot):
         self.active_views: list[ItemDropdownView] = []
 
     async def setup_hook(self):
-        self.check_scheduled_auctions.start() # Start the loop
+        self.check_scheduled_auctions.start() 
         await self.tree.sync()
         print(f"Synced commands for {self.user}")
 
-    @tasks.loop(seconds=60) # Check every minute
+    # --- CATCH BUTTON CLICKS FOR NOTIFICATIONS ---
+    async def on_interaction(self, interaction: discord.Interaction):
+        await super().on_interaction(interaction) # Ensure commands still work
+        
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "")
+            if custom_id.startswith("sched_bell_"):
+                db_id = int(custom_id.split("_")[2])
+                
+                # Toggle in DB
+                is_added = database.toggle_scheduled_notif(db_id, interaction.user.id)
+                if is_added:
+                    await interaction.response.send_message("✅ You will get a DM when this auction starts!", ephemeral=True)
+                else:
+                    await interaction.response.send_message("🔕 You will no longer be notified for this auction.", ephemeral=True)
+
+    # --- BACKGROUND LOOP ---
+    @tasks.loop(seconds=60) 
     async def check_scheduled_auctions(self):
         now = datetime.now(timezone.utc)
-        pending = get_pending_auctions() # Look in the database
+        pending = database.get_pending_auctions() 
 
         for row in pending:
-            # Unpack the database row
             db_id, channel_id, seller_id, item, duration_str, start_price_str, min_inc_str, img_url, start_t_str, currency = row
             start_t = datetime.fromisoformat(start_t_str).replace(tzinfo=timezone.utc)
 
-            # If the scheduled time has arrived AND the channel isn't busy
             if now >= start_t:
                 if channel_id not in self.auctions:
                     try:
+                        # --- SEND DMs TO SUBSCRIBERS ---
+                        subscribers = database.get_scheduled_notifs(db_id)
+                        for sub_id in subscribers:
+                            try:
+                                user = self.get_user(sub_id) or await self.fetch_user(sub_id)
+                                await user.send(f"🔔 **The auction for {item} is starting NOW!**\nJump in here: <#{channel_id}>")
+                            except: 
+                                pass # Ignore if they have DMs blocked
+                                
                         # 1. Fetch Discord objects
                         channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
                         seller = channel.guild.get_member(seller_id) or await channel.guild.fetch_member(seller_id)
@@ -57,10 +82,9 @@ class AuctionBot(commands.Bot):
                         )
                         
                         # 4. Remove from database so it doesn't start twice
-                        remove_scheduled_auction(db_id)
+                        database.remove_scheduled_auction(db_id)
                         
                     except Exception as e:
                         print(f"Failed to auto-start scheduled auction for {item}: {e}")
                 else:
-                    # If channel is currently busy, it will just wait and try again next minute!
                     print(f"Channel {channel_id} is busy. Waiting to start scheduled auction: {item}")
