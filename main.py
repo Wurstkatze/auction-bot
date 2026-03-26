@@ -20,6 +20,8 @@ from src.commands.mysteryCrateCommands import setdrawcost
 from src.commands.mysteryCrateCommands import items
 from src.commands.mysteryCrateCommands import points
 from src.commands.mysteryCrateCommands import draw
+from src.commands.auctionCommands import upcoming
+
 
 
 intents = discord.Intents.default()
@@ -37,6 +39,7 @@ quickbid.register(bot)
 status.register(bot)
 endauction.register(bot)
 on_raw_reaction_add.register(bot)
+upcoming.register(bot)
 
 # ========== MYSTERY CRATE COMMANDS ==========
 
