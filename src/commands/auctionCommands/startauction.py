@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo # <-- Added for timezone conversion
 
 from src.Auction import Auction
 from src.auctionFunctions.auction_end_timer import auction_end_timer
@@ -9,8 +10,8 @@ from src.auctionFunctions.auction_reminders import auction_reminders
 from src.helperFunctions.formatting_helpers import format_price, format_timestamp
 from src.helperFunctions.parse_amount import parse_amount
 from src.helperFunctions.parse_duration import parse_duration
-from database import add_scheduled_auction # Import the DB function
-from src.auctionFunctions.trigger_auction import trigger_auction # We will create this next!
+from database import add_scheduled_auction
+from src.auctionFunctions.trigger_auction import trigger_auction
 
 def register(bot):
     @bot.tree.command(name="startauction", description="Start or schedule an auction.")
@@ -21,7 +22,7 @@ def register(bot):
         start_price="Starting price (e.g. 100, 10M, 1.5B).",
         min_increment="Minimum bid increment (e.g. 10, 5M).",
         image_url="Direct link to an image or GIF of the item (optional).",
-        start_at="When to start (DD-MM-YYYY HH:MM). Leave empty to start now." # <-- Added optional start time
+        start_at="When to start (DD-MM-YYYY HH:MM). Leave empty to start now."
     )
     async def startauction(
         interaction: discord.Interaction,
@@ -31,7 +32,7 @@ def register(bot):
         start_price: str,
         min_increment: str,
         image_url: str | None = None,
-        start_at: str | None = None # <-- Parameter added
+        start_at: str | None = None
     ):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("You need to be in a server to use this command.", ephemeral=True)
@@ -58,9 +59,13 @@ def register(bot):
         planned_start = None
         if start_at:
             try:
-                # Parse DD-MM-YYYY HH:MM
-                planned_start = datetime.strptime(start_at, "%d-%m-%Y %H:%M")
-                planned_start = planned_start.replace(tzinfo=timezone.utc)
+                # 1. Parse as European Time (Amsterdam covers CET/CEST)
+                local_tz = ZoneInfo("Europe/Amsterdam") 
+                planned_start = datetime.strptime(start_at, "%d-%m-%Y %H:%M").replace(tzinfo=local_tz)
+                
+                # 2. Convert to UTC for the bot's internal math
+                planned_start = planned_start.astimezone(timezone.utc)
+                
                 if planned_start <= datetime.now(timezone.utc):
                     await interaction.response.send_message("Start time must be in the future!", ephemeral=True)
                     return
@@ -81,24 +86,41 @@ def register(bot):
 
         # --- BRANCH: SCHEDULE OR START NOW ---
         if planned_start:
-            # Save to Database for later
-            add_scheduled_auction(
+            # Save to Database and GET the Database ID
+            db_id = add_scheduled_auction(
                 interaction.channel_id, seller.id, item, duration, 
                 start_price, min_increment, image_url, planned_start, currency
             )
             
+            # The magic timestamp format for dynamic countdowns!
+            unix_time = int(planned_start.timestamp())
+            
             embed = discord.Embed(
                 title="📅 Auction Scheduled!",
-                description=f"**Item:** {item}\n**Starts:** {format_timestamp(planned_start, 'F')}\n**Seller:** {seller.mention}",
+                description=(
+                    f"**Item:** {item}\n"
+                    f"**Starts:** <t:{unix_time}:F> (<t:{unix_time}:R>)\n"
+                    f"**Seller:** {seller.mention}"
+                ),
                 color=discord.Color.gold()
             )
             if image_url: 
                 embed.set_thumbnail(url=image_url)
-            await interaction.response.send_message(embed=embed)
+
+            # Create the Bell Button
+            view = discord.ui.View(timeout=None)
+            button = discord.ui.Button(
+                style=discord.ButtonStyle.secondary, 
+                label="Notify Me", 
+                emoji="🔔", 
+                custom_id=f"sched_bell_{db_id}" 
+            )
+            view.add_item(button)
+
+            await interaction.response.send_message(embed=embed, view=view)
             
         else:
-            # Start immediately using our new shared helper function!
-            await interaction.response.defer() # Give bot time to process
+            await interaction.response.defer() 
             await trigger_auction(
                 bot=bot, channel=interaction.channel, seller=seller, item_name=item, 
                 delta=delta, start_val=start_val, min_inc_val=min_inc_val, 
