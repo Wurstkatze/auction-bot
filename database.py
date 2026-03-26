@@ -30,6 +30,18 @@ def init_db():
                   FOREIGN KEY(user_id) REFERENCES users(user_id),
                   FOREIGN KEY(item_id) REFERENCES items(id))"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS scheduled_auctions 
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER,
+                    seller_id INTEGER,
+                    item_name TEXT,
+                    duration TEXT,
+                    start_price TEXT,
+                    min_increment TEXT,
+                    image_url TEXT,
+                    start_time TIMESTAMP,
+                    currency_symbol TEXT)""")
     conn.commit()
     conn.close()
 
@@ -42,7 +54,6 @@ def add_item(name, image_url):
     conn.commit()
     conn.close()
     return item_id
-
 
 def remove_item(item_id):
     conn = get_connection()
@@ -142,3 +153,29 @@ def draw_random_item():
         raise e
     finally:
         conn.close()
+
+
+def add_scheduled_auction(channel_id, seller_id, item, duration, price, inc, img, start_t, currency):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""INSERT INTO scheduled_auctions 
+                 (channel_id, seller_id, item_name, duration, start_price, min_increment, image_url, start_time, currency_symbol) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+              (channel_id, seller_id, item, duration, price, inc, img, start_t.isoformat(), currency))
+    conn.commit()
+    conn.close()
+
+def get_pending_auctions():
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM scheduled_auctions ORDER BY start_time ASC")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def remove_scheduled_auction(row_id):
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM scheduled_auctions WHERE id = ?", (row_id,))
+    conn.commit()
+    conn.close()
