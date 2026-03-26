@@ -73,14 +73,10 @@ async def finalize_auction(
 
     # 3. DM the Seller
     try:
-        if winner:
-            await seller.send(
-                f"Your auction for **{auction.item_name}** ended. Winner: {winner.display_name}."
-            )
-        else:
-            await seller.send(
-                f"Your auction for **{auction.item_name}** ended with no bids."
-            )
+        await seller.send(
+            f"Your auction for **{auction.item_name}** in {auction.channel.mention} ended{f". Winner: {winner.mention}" if winner else " with no bids"}."
+        )
+
     except Exception:
         # TODO: Only silently catch specific exception, log error otherwise
         pass

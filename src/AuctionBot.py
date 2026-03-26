@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from datetime import datetime, timezone
 from discord.ext import commands, tasks
 from typing import TYPE_CHECKING
@@ -106,3 +107,10 @@ class AuctionBot(commands.Bot):
                     print(
                         f"Channel {channel_id} is busy. Waiting to start scheduled auction: {item_name}"
                     )
+
+    @check_scheduled_auctions.before_loop
+    async def before_check_scheduled_auctions(self):
+        await self.wait_until_ready()
+        now = datetime.now(timezone.utc)
+        seconds_until_next_minute = 60 - now.second - now.microsecond / 1_000_000
+        await asyncio.sleep(seconds_until_next_minute)

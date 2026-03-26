@@ -120,7 +120,12 @@ async def process_bid(
         if bot.notification_prefs.get(pref_key, False):
             try:
                 await old_highest.send(
-                    f"You've been outbid for **{auction.item_name}**! New price: {format_price(bid_value)}"
+                    (
+                        f"You've been outbid for **{auction.item_name}**! "
+                        f"New price: {format_price(bid_value)}. "
+                        f"The auction ends {format_timestamp(auction.end_time, 'R')}, "
+                        f"jump in here: {auction.channel.mention}"
+                    )
                 )
             except Exception:
                 pass
