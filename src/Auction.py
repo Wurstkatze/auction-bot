@@ -19,6 +19,7 @@ class Auction:
         end_time: datetime,
         start_message: discord.Message,
         currency_symbol: str,
+        start_time: datetime | None = None, # Added this
     ):
         self.channel = channel
         self.seller = seller
@@ -39,3 +40,7 @@ class Auction:
         self.message: discord.Message | None = None
         self.image_url: str | None = None
         self.bid_lock: asyncio.Lock = asyncio.Lock()
+        self.start_time = start_time
+        self.status = "ACTIVE" if start_time is None else "SCHEDULED"
+        # Make start_message optional since scheduled auctions don't have one yet
+        self.start_message = start_message
