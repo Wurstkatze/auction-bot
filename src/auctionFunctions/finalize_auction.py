@@ -2,36 +2,30 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import discord
+from datetime import datetime, timezone
+import database # Import database to fetch upcoming auctions
 from src.helperFunctions.formatting_helpers import format_price
 
 if TYPE_CHECKING:
     from src.AuctionBot import AuctionBot
     from src.Auction import Auction
 
-
 async def finalize_auction(bot: AuctionBot, auction_or_id: Auction | int, forced: bool = False) -> None:
-    """
-    Finalizes the auction.
-    Accepts either an Auction object (preferred) or a channel ID (for fallback).
-    """
-    # 1. Determine if we were given an object or an ID
     if isinstance(auction_or_id, int):
         auction = bot.auctions.pop(auction_or_id, None)
     else:
         auction = auction_or_id
-        # Remove it from the dictionary so no more bids can be placed
         bot.auctions.pop(auction.channel.id, None)
 
     if not auction:
         return
 
-    # 2. Use the direct references saved in the Auction object
     channel = auction.channel
     seller = auction.seller
     winner = auction.highest_bidder
     price = auction.current_price
 
-    # 3. Prepare the Final Announcement Embed
+    # 1. Final Announcement Embed
     end_embed = discord.Embed(
         title=f"🔨 Auction Ended: {auction.item_name}", color=discord.Color.red()
     )
@@ -44,30 +38,39 @@ async def finalize_auction(bot: AuctionBot, auction_or_id: Auction | int, forced
             f"**Final Price:** {format_price(price, auction.currency_symbol)}"
         )
     else:
-        end_embed.description = (
-            f"The auction ended with no bids.\n**Seller:** {seller.mention}"
-        )
+        end_embed.description = f"The auction ended with no bids.\n**Seller:** {seller.mention}"
 
-    # Bring back the thumbnail so people see what was just sold
     if auction.image_url:
         end_embed.set_thumbnail(url=auction.image_url)
 
-    # 4. Send to the channel
-    try:
-        await channel.send(embed=end_embed)
-    except Exception as e:
-        print(f"[ERROR] Could not send end message to channel {channel.id}: {e}")
+    await channel.send(embed=end_embed)
 
-    # 5. DM the Seller
+    # 2. POST-AUCTION RECAP (The new part!)
+    upcoming = database.get_channel_upcoming(channel.id, limit=3)
+    if upcoming:
+        recap_desc = ""
+        for row in upcoming:
+            # db_id, ch_id, sell_id, item, dur, price, inc, img, start_t_str, curr
+            db_id, _, _, item, _, _, _, _, start_t_str, _ = row
+            
+            # Convert string from DB to dynamic Discord timestamp
+            start_t = datetime.fromisoformat(start_t_str).replace(tzinfo=timezone.utc)
+            unix_time = int(start_t.timestamp())
+            recap_desc += f"• **{item}** — <t:{unix_time}:R>\n"
+
+        recap_embed = discord.Embed(
+            title="📅 Coming Up Next...",
+            description=recap_desc,
+            color=discord.Color.blue()
+        )
+        recap_embed.set_footer(text="Use /upcoming to see details and subscribe!")
+        await channel.send(embed=recap_embed)
+
+    # 3. DM the Seller
     try:
         if winner:
-            await seller.send(
-                f"Your auction for **{auction.item_name}** ended.\n"
-                f"Winner: {winner.display_name} with {format_price(price, auction.currency_symbol)}."
-            )
+            await seller.send(f"Your auction for **{auction.item_name}** ended. Winner: {winner.display_name}.")
         else:
-            await seller.send(
-                f"Your auction for **{auction.item_name}** ended with no bids."
-            )
-    except Exception as e:
-        print(f"[ERROR] Could not DM seller {seller.id}: {e}")
+            await seller.send(f"Your auction for **{auction.item_name}** ended with no bids.")
+    except:
+        pass
