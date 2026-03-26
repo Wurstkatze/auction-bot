@@ -130,7 +130,7 @@ def register(bot):
 
             # Create the Bell Button
             view = discord.ui.View(timeout=None)
-            button = discord.ui.Button(
+            button: discord.ui.Button = discord.ui.Button(
                 style=discord.ButtonStyle.secondary,
                 label="Notify Me",
                 emoji="🔔",

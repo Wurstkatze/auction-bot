@@ -35,7 +35,7 @@ class AuctionBot(commands.Bot):
             interaction.type == discord.InteractionType.component
             and interaction.data is not None
         ):
-            custom_id = interaction.data.get("custom_id", "")
+            custom_id: str = str(interaction.data.get("custom_id", ""))
             if custom_id.startswith("sched_bell_"):
                 auction_id = int(custom_id.split("_")[2])
                 item_name = database.get_scheduled_auction_item_name(auction_id)
