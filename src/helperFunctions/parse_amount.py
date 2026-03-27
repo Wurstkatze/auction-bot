@@ -4,16 +4,14 @@ import re
 def parse_amount(amount: str) -> int:
     cleaned_amount = amount.strip().upper()
 
-    if cleaned_amount.endswith("B"):
-        return int(cleaned_amount[:-1]) * 1_000_000_000
-
-    elif (
-        cleaned_amount.endswith("M")
-        or cleaned_amount.endswith("MIL")
-        or cleaned_amount.endswith("MILLION")
-    ):
-        return int(re.sub(r"(M|MIL|MILLION)$", "", cleaned_amount)) * 1_000_000
-    elif cleaned_amount.endswith("K"):
-        return int(cleaned_amount[:-1]) * 1000
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(B|M|K)", cleaned_amount)
+    if match:
+        value, suffix = float(match.group(1)), match.group(2)
+        multipliers = {
+            "K": 1_000,
+            "M": 1_000_000,
+            "B": 1_000_000_000,
+        }
+        return int(value * multipliers[suffix])
 
     return int(cleaned_amount)

@@ -33,10 +33,11 @@ def register(bot: AuctionBot):
             )
             return
 
-        bid_value = parse_amount(amount)
-        if bid_value is None:
+        try:
+            bid_value = parse_amount(amount)
+        except ValueError:
             await interaction.response.send_message(
-                "Invalid bid format.", ephemeral=True
+                "Invalid bid format. Example: 150, 5M, 1.2B", ephemeral=True
             )
             return
 
