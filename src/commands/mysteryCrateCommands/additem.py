@@ -1,12 +1,15 @@
 import discord
 from discord import app_commands
 import database
+from src.helperFunctions.isAdmin import isAdmin
 
 
 def register(bot):
+
     @bot.tree.command(
         name="additem", description="Add an item to the mystery crate pool"
     )
+    @app_commands.guild_only()
     @app_commands.describe(
         name="Item name",
         image="Upload an image (optional)",
@@ -18,17 +21,7 @@ def register(bot):
         image: discord.Attachment | None = None,
         image_url: str | None = None,
     ):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "You need to be in a server to use this command.", ephemeral=True
-            )
-            return
-
-        role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-        if role not in interaction.user.roles:
-            await interaction.response.send_message(
-                "You need the **Cryysys** role to add items.", ephemeral=True
-            )
+        if not await isAdmin(interaction):
             return
 
         if image and image_url:

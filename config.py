@@ -1,0 +1,3 @@
+class discord:
+    ADMIN_ROLE = "Cryysys"
+    SUPPORT_CHANNEL_ID = "1486121307383791626"

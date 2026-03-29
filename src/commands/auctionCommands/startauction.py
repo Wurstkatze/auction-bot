@@ -2,15 +2,17 @@ from datetime import datetime, timedelta, timezone
 from discord import app_commands
 from zoneinfo import ZoneInfo
 import discord
-
 from database import add_scheduled_auction
+from src.helperFunctions.isAdmin import isAdmin
 from src.auctionFunctions.trigger_auction import trigger_auction
 from src.helperFunctions.parse_amount import parse_amount
 from src.helperFunctions.parse_duration import parse_duration
 
 
 def register(bot):
+
     @bot.tree.command(name="startauction", description="Start or schedule an auction.")
+    @app_commands.guild_only()
     @app_commands.describe(
         seller="The member who is selling the item.",
         duration="Auction duration, e.g. 1h30m (max 48h).",
@@ -30,18 +32,9 @@ def register(bot):
         image_url: str | None = None,
         start_at: str | None = None,
     ):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "You need to be in a server to use this command.", ephemeral=True
-            )
+        if not await isAdmin(interaction):
             return
-
-        role = discord.utils.get(interaction.guild.roles, name="Cryysys")
-        if role not in interaction.user.roles:
-            await interaction.response.send_message(
-                "You need the **Cryysys** role to start an auction.", ephemeral=True
-            )
-            return
+        assert interaction.guild
 
         if interaction.channel_id in bot.auctions and not start_at:
             await interaction.response.send_message(

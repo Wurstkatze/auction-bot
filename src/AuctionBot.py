@@ -1,11 +1,15 @@
 from __future__ import annotations
-import asyncio
 from datetime import datetime, timezone
 from discord.ext import commands, tasks
 from typing import TYPE_CHECKING
+import asyncio
 import database
 import discord
+import random
+import string
+import traceback
 
+import config
 from src.auctionFunctions.trigger_auction import trigger_auction
 from src.helperFunctions.get_guild_member import get_guild_member
 from src.helperFunctions.get_text_channel import get_text_channel
@@ -27,6 +31,33 @@ class AuctionBot(commands.Bot):
 
     async def setup_hook(self):
         self.check_scheduled_auctions.start()
+
+        # This catches all raised errors that would fall through and gives nice output
+        @self.tree.error
+        async def on_app_command_error(
+            interaction: discord.Interaction, error: Exception
+        ):
+            match (error):
+                case discord.app_commands.errors.BotMissingPermissions():
+                    await interaction.response.send_message(
+                        "The bot does not have sufficient permissions to execute this command.\n"
+                        + f"Missing: {error.missing_permissions}"
+                    )  # debug dunno if this happens, just for testing
+                case _:  # Any other error: We log it and inform the user
+                    trace_id = "".join(
+                        random.choices(string.ascii_lowercase + string.digits, k=16)
+                    )
+
+                    print(f"[{trace_id}] Unexpected error:")
+                    traceback.print_exception(error.__cause__ or error)
+
+                    await interaction.response.send_message(
+                        f"An unexpected error occurred. You can report this here: <#{config.discord.SUPPORT_CHANNEL_ID}>.\n"
+                        + "Please include a short description of your actions that lead to this error.\n"
+                        + f"Trace-ID: `{trace_id}`",
+                        ephemeral=True,
+                    )
+
         await self.tree.sync()
         print(f"Synced commands for {self.user}")
 
